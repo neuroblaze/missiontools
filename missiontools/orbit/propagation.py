@@ -86,20 +86,23 @@ def propagate_analytical(t: list[datetime] | npt.NDArray[np.datetime64],
 
     if type == "j2":
         # compute secular J2 terms
+        # central_body_j2 = mu * J2_dim * R^2, so dividing by mu gives J2_dim * R^2 (m^2),
+        # the quantity that appears in the Vallado secular rate formulas.
+        j2_r2 = central_body_j2 / central_body_mu
 
         # Vallado eq. 9-37
-        raan_dot = (-3.0*mean_motion*central_body_radius**2*central_body_j2) / \
+        raan_dot = (-3.0*mean_motion*j2_r2) / \
                    (2.0*p**2) * np.cos(i)
         raan = raan + raan_dot*t_e
 
         # Vallado eq. 9-39
-        arg_p_dot = (3.0*mean_motion*central_body_radius**2*central_body_j2) / \
+        arg_p_dot = (3.0*mean_motion*j2_r2) / \
                     (4.0*p**2) * (4.0-5.0*np.sin(i)**2)
         arg_p = arg_p + arg_p_dot*t_e
 
         # Vallado eq. 9-41
-        ma_dot = (-3.0*mean_motion*central_body_radius**2*central_body_j2*np.sqrt(1-e**2)) / \
-                 (4.0*p**2) * (3.0*np.sin(i) - 2)
+        ma_dot = (3.0*mean_motion*j2_r2*np.sqrt(1-e**2)) / \
+                 (4.0*p**2) * (2.0 - 3.0*np.sin(i)**2)
         ma_t = (ma + (mean_motion + ma_dot)*t_e) % (2*np.pi)
     else:
         # two body case - raan, arg_p, ma remain at initial values

@@ -22,3 +22,8 @@ EARTH_J2   = 1.75553e+25
 
 # Earth mean (arithmetic) radius in meters, as per IUGG
 EARTH_MEAN_RADIUS = 6_371_008.7714
+
+# WGS84 ellipsoid defining parameters
+# Source: NGA.STND.0036_1.0.0_WGS84 (2014)
+EARTH_SEMI_MAJOR_AXIS    = 6_378_137.0       # m  (semi-major axis, a)
+EARTH_INVERSE_FLATTENING = 298.257223563      # dimensionless (1/f)

@@ -1,6 +1,8 @@
 import numpy as np
 import numpy.typing as npt
 
+from .constants import EARTH_SEMI_MAJOR_AXIS, EARTH_INVERSE_FLATTENING
+
 # J2000.0 epoch in UTC (≈ UT1 to < 1 s; TT leads UT1 by ~69 s and should NOT be used)
 _J2000_US = np.datetime64('2000-01-01T12:00:00', 'us')
 _SECONDS_PER_JULIAN_CENTURY = 36525.0 * 86400.0
@@ -74,4 +76,84 @@ def eci_to_ecef(eci_vecs: npt.NDArray[np.floating],
                    [     z,      z, o]]).transpose(2, 0, 1)  # (N, 3, 3)
 
     result = np.einsum('nij,nj->ni', Rz, np.atleast_2d(eci_vecs))  # (N, 3)
+    return result[0] if scalar else result
+
+
+def ecef_to_eci(ecef_vecs: npt.NDArray[np.floating],
+                t: npt.NDArray[np.datetime64]) -> npt.NDArray[np.floating]:
+    """Convert ECEF position/velocity vectors to ECI via GMST rotation.
+
+    Parameters
+    ----------
+    ecef_vecs : npt.NDArray[np.floating]
+        Vectors in the ECEF frame, shape ``(N, 3)`` or ``(3,)`` for a single
+        vector.
+    t : npt.NDArray[np.datetime64]
+        UTC/UT1 observation times as ``datetime64[us]``, shape ``(N,)`` or
+        scalar. Must match the first dimension of ``ecef_vecs``.
+
+    Returns
+    -------
+    npt.NDArray[np.floating]
+        Vectors in the ECI frame, same shape as ``ecef_vecs``.
+    """
+    theta = gmst(t)
+    scalar = np.ndim(theta) == 0
+    theta = np.atleast_1d(theta)
+
+    cos_t, sin_t = np.cos(theta), np.sin(theta)
+    z, o = np.zeros_like(theta), np.ones_like(theta)
+
+    # Rz(+θ) = Rz(-θ)ᵀ: ECEF → ECI is the transpose of the ECI→ECEF rotation
+    Rz = np.array([[cos_t, -sin_t, z],
+                   [sin_t,  cos_t, z],
+                   [    z,      z, o]]).transpose(2, 0, 1)  # (N, 3, 3)
+
+    result = np.einsum('nij,nj->ni', Rz, np.atleast_2d(ecef_vecs))  # (N, 3)
+    return result[0] if scalar else result
+
+
+def geodetic_to_ecef(lat: float | npt.NDArray[np.floating],
+                     lon: float | npt.NDArray[np.floating],
+                     alt: float | npt.NDArray[np.floating] = 0.0
+                     ) -> npt.NDArray[np.floating]:
+    """Convert geodetic coordinates to ECEF Cartesian coordinates (WGS84).
+
+    Parameters
+    ----------
+    lat : float | npt.NDArray[np.floating]
+        Geodetic latitude (rad), scalar or shape ``(N,)``.
+    lon : float | npt.NDArray[np.floating]
+        Longitude (rad), scalar or shape ``(N,)``.
+    alt : float | npt.NDArray[np.floating], optional
+        Height above the WGS84 ellipsoid (m). Defaults to 0.
+
+    Returns
+    -------
+    npt.NDArray[np.floating]
+        ECEF position vector(s) (m), shape ``(3,)`` for scalar inputs or
+        ``(N, 3)`` for array inputs.
+    """
+    lat = np.asarray(lat, dtype=np.float64)
+    lon = np.asarray(lon, dtype=np.float64)
+    alt = np.asarray(alt, dtype=np.float64)
+    scalar = lat.ndim == 0 and lon.ndim == 0 and alt.ndim == 0
+
+    lat = np.atleast_1d(lat)
+    lon = np.atleast_1d(lon)
+    alt = np.atleast_1d(alt)
+
+    # WGS84 derived constants
+    f  = 1.0 / EARTH_INVERSE_FLATTENING
+    e2 = 2.0 * f - f**2          # first eccentricity squared
+    a  = EARTH_SEMI_MAJOR_AXIS
+
+    # Radius of curvature in the prime vertical
+    N = a / np.sqrt(1.0 - e2 * np.sin(lat)**2)
+
+    x = (N + alt)            * np.cos(lat) * np.cos(lon)
+    y = (N + alt)            * np.cos(lat) * np.sin(lon)
+    z = (N * (1.0 - e2) + alt) * np.sin(lat)
+
+    result = np.stack([x, y, z], axis=-1)  # (N, 3)
     return result[0] if scalar else result

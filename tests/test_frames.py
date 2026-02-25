@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from missiontools.orbit.frames import gmst, eci_to_ecef
+from missiontools.orbit.frames import gmst, eci_to_ecef, ecef_to_eci, geodetic_to_ecef
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -196,3 +196,170 @@ def test_eci_to_ecef_array_time_shape_preserved():
     times = _J2000_US + np.arange(n) * np.timedelta64(60_000_000, 'us')
     r_eci = np.random.default_rng(3).standard_normal((n, 3)) * 7e6
     assert eci_to_ecef(r_eci, times).shape == (n, 3)
+
+
+# ===========================================================================
+# ecef_to_eci
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Norm preservation
+# ---------------------------------------------------------------------------
+
+def test_ecef_to_eci_norm_preserved():
+    """ECEF→ECI is a pure rotation; vector norms must be unchanged."""
+    times = _J2000_US + np.arange(100) * np.timedelta64(600_000_000, 'us')
+    r_ecef = np.random.default_rng(4).standard_normal((100, 3)) * 7e6
+    r_eci = ecef_to_eci(r_ecef, times)
+    np.testing.assert_allclose(
+        np.linalg.norm(r_eci, axis=1),
+        np.linalg.norm(r_ecef, axis=1),
+        rtol=1e-12,
+    )
+
+
+# ---------------------------------------------------------------------------
+# z-component unchanged
+# ---------------------------------------------------------------------------
+
+def test_ecef_to_eci_z_unchanged():
+    """Rotation about Z must not alter the z-component of any vector."""
+    times = _J2000_US + np.arange(50) * np.timedelta64(3_600_000_000, 'us')
+    r_ecef = np.random.default_rng(5).standard_normal((50, 3)) * 7e6
+    r_eci = ecef_to_eci(r_ecef, times)
+    np.testing.assert_allclose(r_eci[:, 2], r_ecef[:, 2], rtol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Round-trip: ECEF → ECI → ECEF
+# ---------------------------------------------------------------------------
+
+def test_ecef_to_eci_round_trip():
+    """eci_to_ecef(ecef_to_eci(r, t), t) must recover the original ECEF vector."""
+    times = _J2000_US + np.arange(20) * np.timedelta64(1_800_000_000, 'us')
+    r_ecef = np.random.default_rng(6).standard_normal((20, 3)) * 7e6
+    r_ecef_recovered = eci_to_ecef(ecef_to_eci(r_ecef, times), times)
+    np.testing.assert_allclose(r_ecef_recovered, r_ecef, rtol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Inverse consistency: ecef_to_eci and eci_to_ecef are mutual inverses
+# ---------------------------------------------------------------------------
+
+def test_eci_ecef_mutual_inverse():
+    """eci_to_ecef and ecef_to_eci must be exact inverses of each other."""
+    times = _J2000_US + np.arange(30) * np.timedelta64(900_000_000, 'us')
+    r_eci = np.random.default_rng(7).standard_normal((30, 3)) * 7e6
+    np.testing.assert_allclose(
+        ecef_to_eci(eci_to_ecef(r_eci, times), times),
+        r_eci,
+        rtol=1e-12,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Output shape
+# ---------------------------------------------------------------------------
+
+def test_ecef_to_eci_scalar_time_returns_1d():
+    """Scalar time + (3,) vector should return shape (3,)."""
+    result = ecef_to_eci(np.array([7e6, 0.0, 0.0]), _J2000_US)
+    assert result.shape == (3,)
+
+
+def test_ecef_to_eci_array_time_shape_preserved():
+    """Output shape (N, 3) must match input for N-element time array."""
+    n = 37
+    times = _J2000_US + np.arange(n) * np.timedelta64(60_000_000, 'us')
+    r_ecef = np.random.default_rng(8).standard_normal((n, 3)) * 7e6
+    assert ecef_to_eci(r_ecef, times).shape == (n, 3)
+
+
+# ===========================================================================
+# geodetic_to_ecef
+# ===========================================================================
+
+from missiontools.orbit.constants import EARTH_SEMI_MAJOR_AXIS, EARTH_INVERSE_FLATTENING
+
+_a  = EARTH_SEMI_MAJOR_AXIS
+_f  = 1.0 / EARTH_INVERSE_FLATTENING
+_b  = _a * (1.0 - _f)          # semi-minor axis
+_e2 = 2.0 * _f - _f**2         # first eccentricity squared
+
+
+# ---------------------------------------------------------------------------
+# Known geometry: equator and poles
+# ---------------------------------------------------------------------------
+
+def test_geodetic_equator_prime_meridian():
+    """lat=0, lon=0 → (+a, 0, 0)."""
+    r = geodetic_to_ecef(0.0, 0.0)
+    np.testing.assert_allclose(r, [_a, 0.0, 0.0], atol=1e-6)
+
+
+def test_geodetic_equator_90e():
+    """lat=0, lon=π/2 → (0, +a, 0)."""
+    r = geodetic_to_ecef(0.0, np.pi / 2)
+    np.testing.assert_allclose(r, [0.0, _a, 0.0], atol=1e-6)
+
+
+def test_geodetic_north_pole():
+    """lat=π/2 → (0, 0, +b) — semi-minor axis at the pole."""
+    r = geodetic_to_ecef(np.pi / 2, 0.0)
+    np.testing.assert_allclose(r, [0.0, 0.0, _b], atol=1e-4)
+
+
+def test_geodetic_south_pole():
+    """lat=−π/2 → (0, 0, −b)."""
+    r = geodetic_to_ecef(-np.pi / 2, 0.0)
+    np.testing.assert_allclose(r, [0.0, 0.0, -_b], atol=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# Altitude offset
+# ---------------------------------------------------------------------------
+
+def test_geodetic_altitude_adds_radially_at_equator():
+    """On the equator, adding altitude h should increase |r| by exactly h."""
+    h = 500_000.0
+    r0 = geodetic_to_ecef(0.0, 0.0, 0.0)
+    r1 = geodetic_to_ecef(0.0, 0.0, h)
+    np.testing.assert_allclose(np.linalg.norm(r1) - np.linalg.norm(r0), h, rtol=1e-10)
+
+
+def test_geodetic_altitude_adds_radially_at_pole():
+    """At the pole, adding altitude h should increase |r| by exactly h."""
+    h = 500_000.0
+    r0 = geodetic_to_ecef(np.pi / 2, 0.0, 0.0)
+    r1 = geodetic_to_ecef(np.pi / 2, 0.0, h)
+    np.testing.assert_allclose(np.linalg.norm(r1) - np.linalg.norm(r0), h, rtol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# Ellipsoid surface constraint
+# ---------------------------------------------------------------------------
+
+def test_geodetic_surface_satisfies_ellipsoid_equation():
+    """Points on the surface (alt=0) must satisfy x²/a² + y²/a² + z²/b² = 1."""
+    lats = np.linspace(-np.pi / 2, np.pi / 2, 90)
+    lons = np.linspace(0, 2 * np.pi, 90)
+    r = geodetic_to_ecef(lats, lons)
+    lhs = (r[:, 0]**2 + r[:, 1]**2) / _a**2 + r[:, 2]**2 / _b**2
+    np.testing.assert_allclose(lhs, 1.0, rtol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# Output shape
+# ---------------------------------------------------------------------------
+
+def test_geodetic_scalar_returns_1d():
+    """Scalar lat/lon/alt should return shape (3,)."""
+    assert geodetic_to_ecef(0.0, 0.0).shape == (3,)
+
+
+def test_geodetic_array_returns_2d():
+    """Array lat/lon inputs should return shape (N, 3)."""
+    n = 50
+    lats = np.linspace(-np.pi / 2, np.pi / 2, n)
+    lons = np.zeros(n)
+    assert geodetic_to_ecef(lats, lons).shape == (n, 3)
