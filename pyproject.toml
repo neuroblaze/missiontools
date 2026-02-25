@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "missiontools"
+version = "0.1.0"
+description = "Space mission analysis and design (SMAD) toolkit"
+requires-python = ">=3.13"
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "skyfield",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-cov",
+    "jupyterlab",
+    "ipykernel",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["missiontools*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
