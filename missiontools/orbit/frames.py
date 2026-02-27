@@ -157,3 +157,87 @@ def geodetic_to_ecef(lat: float | npt.NDArray[np.floating],
 
     result = np.stack([x, y, z], axis=-1)  # (N, 3)
     return result[0] if scalar else result
+
+
+def _lvlh_basis(r_eci: npt.NDArray[np.floating],
+                v_eci: npt.NDArray[np.floating],
+                ) -> npt.NDArray[np.floating]:
+    """Build the (N, 3, 3) ECI→LVLH rotation matrix Q for each state vector.
+
+    Rows of Q are the three LVLH unit vectors expressed in ECI coordinates:
+    row 0 = R̂ (radial), row 1 = Ŝ (along-track), row 2 = Ŵ (orbit normal).
+    """
+    R_hat = r_eci / np.linalg.norm(r_eci, axis=1, keepdims=True)    # (N, 3)
+    h     = np.cross(r_eci, v_eci)                                   # (N, 3)
+    W_hat = h     / np.linalg.norm(h,     axis=1, keepdims=True)    # (N, 3)
+    S_hat = np.cross(W_hat, R_hat)                                   # (N, 3)
+    return np.stack([R_hat, S_hat, W_hat], axis=1)                   # (N, 3, 3)
+
+
+def eci_to_lvlh(vecs:  npt.NDArray[np.floating],
+                r_eci: npt.NDArray[np.floating],
+                v_eci: npt.NDArray[np.floating],
+                ) -> npt.NDArray[np.floating]:
+    """Convert vectors from the ECI frame to the LVLH (RSW) frame.
+
+    The LVLH frame is defined by the satellite's instantaneous orbital state:
+
+    * **x̂ (R)** — radial, pointing away from the central body
+    * **ŷ (S)** — along-track, in the orbital plane (= velocity direction
+      for circular orbits)
+    * **ẑ (W)** — cross-track/normal, in the angular-momentum direction
+      (right-hand normal to the orbital plane)
+
+    Parameters
+    ----------
+    vecs : npt.NDArray[np.floating]
+        Vectors to transform in the ECI frame, shape ``(N, 3)`` or ``(3,)``.
+    r_eci : npt.NDArray[np.floating]
+        Satellite ECI position vector(s), shape ``(N, 3)`` or ``(3,)`` (m).
+    v_eci : npt.NDArray[np.floating]
+        Satellite ECI velocity vector(s), shape ``(N, 3)`` or ``(3,)`` (m/s).
+
+    Returns
+    -------
+    npt.NDArray[np.floating]
+        Vectors in the LVLH frame, same shape as ``vecs``.
+    """
+    vecs  = np.asarray(vecs,  dtype=np.float64)
+    r_eci = np.asarray(r_eci, dtype=np.float64)
+    v_eci = np.asarray(v_eci, dtype=np.float64)
+    scalar = vecs.ndim == 1
+    Q      = _lvlh_basis(np.atleast_2d(r_eci), np.atleast_2d(v_eci))  # (N,3,3)
+    result = np.einsum('nij,nj->ni', Q, np.atleast_2d(vecs))           # (N, 3)
+    return result[0] if scalar else result
+
+
+def lvlh_to_eci(vecs:  npt.NDArray[np.floating],
+                r_eci: npt.NDArray[np.floating],
+                v_eci: npt.NDArray[np.floating],
+                ) -> npt.NDArray[np.floating]:
+    """Convert vectors from the LVLH (RSW) frame to the ECI frame.
+
+    Inverse of :func:`eci_to_lvlh`.  Because the LVLH rotation matrix Q is
+    orthonormal, the inverse is simply its transpose: ``v_eci = Qᵀ v_lvlh``.
+
+    Parameters
+    ----------
+    vecs : npt.NDArray[np.floating]
+        Vectors to transform in the LVLH frame, shape ``(N, 3)`` or ``(3,)``.
+    r_eci : npt.NDArray[np.floating]
+        Satellite ECI position vector(s), shape ``(N, 3)`` or ``(3,)`` (m).
+    v_eci : npt.NDArray[np.floating]
+        Satellite ECI velocity vector(s), shape ``(N, 3)`` or ``(3,)`` (m/s).
+
+    Returns
+    -------
+    npt.NDArray[np.floating]
+        Vectors in the ECI frame, same shape as ``vecs``.
+    """
+    vecs  = np.asarray(vecs,  dtype=np.float64)
+    r_eci = np.asarray(r_eci, dtype=np.float64)
+    v_eci = np.asarray(v_eci, dtype=np.float64)
+    scalar = vecs.ndim == 1
+    Q      = _lvlh_basis(np.atleast_2d(r_eci), np.atleast_2d(v_eci))  # (N,3,3)
+    result = np.einsum('nji,nj->ni', Q, np.atleast_2d(vecs))           # Qᵀ applied
+    return result[0] if scalar else result

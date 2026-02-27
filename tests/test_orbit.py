@@ -2,8 +2,10 @@ import numpy as np
 import pytest
 from datetime import datetime, timedelta
 
-from missiontools.orbit.propagation import propagate_analytical
-from missiontools.orbit.constants import EARTH_MU
+from missiontools.orbit.propagation import (
+    propagate_analytical, sun_synchronous_inclination, sun_synchronous_orbit,
+)
+from missiontools.orbit.constants import EARTH_MU, EARTH_J2, EARTH_SEMI_MAJOR_AXIS
 
 EPOCH = datetime(2025, 1, 1, 12, 0, 0)
 
@@ -165,3 +167,254 @@ def test_input_validation_raises(override, match):
     kwargs = {**_BASE, **override}
     with pytest.raises(ValueError, match=match):
         propagate_analytical([EPOCH], **kwargs)
+
+
+# ===========================================================================
+# sun_synchronous_inclination
+# ===========================================================================
+
+# Mean solar rate and J2 constants used to cross-check formulas
+_N_SUN = 2.0 * np.pi / (365.25 * 86400.0)   # rad/s
+
+
+# ---------------------------------------------------------------------------
+# Return value is in radians and in the retrograde band (π/2, π)
+# ---------------------------------------------------------------------------
+
+def test_sso_inclination_retrograde():
+    """SSO inclination must be in (90°, 180°) for any valid Earth orbit."""
+    i = sun_synchronous_inclination(7_000_000.0, 0.0)
+    assert np.pi / 2 < i < np.pi
+
+
+# ---------------------------------------------------------------------------
+# Circular ISS-altitude orbit → ~97.4° (well-known reference value)
+# ---------------------------------------------------------------------------
+
+def test_sso_known_value_iss_altitude():
+    """At ~400 km altitude (a ≈ 6 771 km), SSO inclination ≈ 97.0°."""
+    i = sun_synchronous_inclination(6_771_000.0)
+    assert abs(np.degrees(i) - 97.0) < 0.1
+
+
+# ---------------------------------------------------------------------------
+# Higher orbit → larger inclination (closer to 180°)
+# ---------------------------------------------------------------------------
+
+def test_sso_inclination_increases_with_altitude():
+    """SSO inclination increases monotonically with semi-major axis."""
+    i_low  = sun_synchronous_inclination(6_600_000.0)
+    i_mid  = sun_synchronous_inclination(7_200_000.0)
+    i_high = sun_synchronous_inclination(8_000_000.0)
+    assert i_low < i_mid < i_high
+
+
+# ---------------------------------------------------------------------------
+# Round-trip: computed i reproduces the target RAAN drift
+# ---------------------------------------------------------------------------
+
+def test_sso_raan_drift_matches_solar():
+    """Plugging the returned inclination back into the J2 drift formula must
+    give a drift rate equal to the mean solar rate within 0.01 %."""
+    a, e = 7_100_000.0, 0.001
+    i = sun_synchronous_inclination(a, e)
+
+    n     = np.sqrt(EARTH_MU / a**3)
+    p     = a * (1.0 - e**2)
+    j2_r2 = EARTH_J2 / EARTH_MU
+    raan_dot = (-3.0 * n * j2_r2 / (2.0 * p**2)) * np.cos(i)
+
+    assert abs(raan_dot / _N_SUN - 1.0) < 1e-4
+
+
+# ---------------------------------------------------------------------------
+# Non-zero eccentricity is handled correctly
+# ---------------------------------------------------------------------------
+
+def test_sso_eccentric_orbit():
+    """Eccentric orbit (e = 0.05) must return a valid inclination."""
+    i = sun_synchronous_inclination(7_500_000.0, e=0.05)
+    assert np.pi / 2 < i < np.pi
+
+
+# ---------------------------------------------------------------------------
+# Return type is plain float
+# ---------------------------------------------------------------------------
+
+def test_sso_return_type():
+    """Function must return a Python float."""
+    i = sun_synchronous_inclination(7_000_000.0)
+    assert isinstance(i, float)
+
+
+# ---------------------------------------------------------------------------
+# Input validation
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("kwargs,match", [
+    ({"a": 0.0},                    "Semi-major axis"),
+    ({"a": -1.0},                   "Semi-major axis"),
+    ({"a": 7e6, "e": -0.1},         "Eccentricity"),
+    ({"a": 7e6, "e": 1.0},          "Eccentricity"),
+    ({"a": 7e6, "central_body_mu": 0.0},  "central_body_mu"),
+    ({"a": 7e6, "central_body_mu": -1.0}, "central_body_mu"),
+])
+def test_sso_validation_raises(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        sun_synchronous_inclination(**kwargs)
+
+
+def test_sso_no_solution_raises():
+    """An orbit far too large or with tiny j2 should have |cos i| > 1."""
+    with pytest.raises(ValueError, match="No sun-synchronous orbit"):
+        # Very large a → tiny n → cos_i >> 1
+        sun_synchronous_inclination(1e9, 0.0)
+
+
+# ===========================================================================
+# sun_synchronous_orbit
+# ===========================================================================
+
+_SSO_ALT  = 500_000.0   # 500 km altitude
+_SSO_LTAN = "10:30"     # Local time of ascending node
+_SSO_EPOCH = np.datetime64('2024-06-21T12:00:00', 'us')   # near summer solstice
+
+
+def _sso():
+    return sun_synchronous_orbit(_SSO_ALT, _SSO_LTAN, epoch=_SSO_EPOCH)
+
+
+# ---------------------------------------------------------------------------
+# Dict keys match propagate_analytical parameters
+# ---------------------------------------------------------------------------
+
+def test_sso_orbit_dict_keys():
+    """Returned dict must contain exactly the required propagate_analytical keys."""
+    required = {'epoch', 'a', 'e', 'i', 'arg_p', 'raan', 'ma'}
+    result = _sso()
+    assert required.issubset(result.keys())
+
+
+# ---------------------------------------------------------------------------
+# Circular orbit (e = 0, arg_p = 0)
+# ---------------------------------------------------------------------------
+
+def test_sso_orbit_circular():
+    """SSO orbit must be circular: e == 0 and arg_p == 0."""
+    r = _sso()
+    assert r['e'] == 0.0
+    assert r['arg_p'] == 0.0
+    assert r['ma'] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Semi-major axis matches altitude + equatorial radius
+# ---------------------------------------------------------------------------
+
+def test_sso_orbit_semi_major_axis():
+    """a must equal EARTH_SEMI_MAJOR_AXIS + altitude."""
+    r = _sso()
+    assert r['a'] == pytest.approx(EARTH_SEMI_MAJOR_AXIS + _SSO_ALT)
+
+
+# ---------------------------------------------------------------------------
+# Inclination matches sun_synchronous_inclination
+# ---------------------------------------------------------------------------
+
+def test_sso_orbit_inclination():
+    """i must match the value returned by sun_synchronous_inclination."""
+    r = _sso()
+    i_ref = sun_synchronous_inclination(r['a'])
+    assert r['i'] == pytest.approx(i_ref)
+
+
+# ---------------------------------------------------------------------------
+# RAAN reproduces the requested LTAN
+# ---------------------------------------------------------------------------
+
+def test_sso_orbit_ltan_ascending():
+    """Computing LTAN from RAAN and Sun's RA at epoch must match the input."""
+    r = _sso()
+
+    # Recompute Sun's RA at the epoch (same algorithm as the function)
+    d = float((np.asarray(_SSO_EPOCH, dtype='datetime64[us]') -
+               np.datetime64('2000-01-01T12:00:00', 'us')).astype(np.float64)
+              ) * 1e-6 / 86400.0
+    L_deg = (280.460 + 0.9856474 * d) % 360.0
+    g_rad = np.radians((357.528 + 0.9856003 * d) % 360.0)
+    lam   = np.radians(L_deg) + np.radians(1.915 * np.sin(g_rad) + 0.020 * np.sin(2*g_rad))
+    eps   = np.radians(23.439 - 0.0000004 * d)
+    ra_sun = float(np.arctan2(np.cos(eps) * np.sin(lam), np.cos(lam)) % (2*np.pi))
+
+    # LTAN = 12 + (RAAN - RA_sun) * 12/π
+    ltan_computed = (12.0 + (r['raan'] - ra_sun) * (12.0 / np.pi)) % 24.0
+    ltan_expected = 10.5   # "10:30"
+    assert abs(ltan_computed - ltan_expected) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Descending node: RAAN offset by 12 h vs ascending
+# ---------------------------------------------------------------------------
+
+def test_sso_orbit_descending_vs_ascending():
+    """Descending-node orbit at LTDN X should equal ascending-node orbit at LTAN X+12."""
+    r_asc  = sun_synchronous_orbit(_SSO_ALT, "10:30", node_type='ascending',  epoch=_SSO_EPOCH)
+    r_desc = sun_synchronous_orbit(_SSO_ALT, "22:30", node_type='descending', epoch=_SSO_EPOCH)
+    # Both specify the same ascending-node local time (10:30 AN == 22:30 DN)
+    assert r_asc['raan'] == pytest.approx(r_desc['raan'], abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# HH:MM:SS format is parsed correctly
+# ---------------------------------------------------------------------------
+
+def test_sso_orbit_seconds_format():
+    """'HH:MM:SS' string must produce the same result as the equivalent 'HH:MM'
+    with fractional minutes."""
+    # "10:30:00" should equal "10:30"
+    r_hm  = sun_synchronous_orbit(_SSO_ALT, "10:30",    epoch=_SSO_EPOCH)
+    r_hms = sun_synchronous_orbit(_SSO_ALT, "10:30:00", epoch=_SSO_EPOCH)
+    assert r_hm['raan'] == pytest.approx(r_hms['raan'], abs=1e-12)
+
+    # "10:30:36" = 10 + 30/60 + 36/3600 = 10.51 h
+    r_sec = sun_synchronous_orbit(_SSO_ALT, "10:30:36", epoch=_SSO_EPOCH)
+    assert r_sec['raan'] != pytest.approx(r_hm['raan'], abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Epoch is stored as datetime64[us]
+# ---------------------------------------------------------------------------
+
+def test_sso_orbit_epoch_type():
+    """epoch in the returned dict must be datetime64[us]."""
+    r = _sso()
+    assert r['epoch'].dtype == np.dtype('datetime64[us]')
+    assert r['epoch'] == _SSO_EPOCH
+
+
+# ---------------------------------------------------------------------------
+# Result passes straight into propagate_analytical without error
+# ---------------------------------------------------------------------------
+
+def test_sso_orbit_propagatable():
+    """Unpacking the result dict into propagate_analytical must not raise."""
+    params = _sso()
+    t = np.array([_SSO_EPOCH, _SSO_EPOCH + np.timedelta64(90 * 60, 's')])
+    r, v = propagate_analytical(t, **params)
+    assert r.shape == (2, 3)
+    assert v.shape == (2, 3)
+
+
+# ---------------------------------------------------------------------------
+# Input validation
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("kwargs,match", [
+    ({"altitude": _SSO_ALT, "local_time_at_node": "bad"},         "HH:MM"),
+    ({"altitude": _SSO_ALT, "local_time_at_node": "10:30",
+      "node_type": "sideways"},                                     "node_type"),
+    ({"altitude": -1.0,     "local_time_at_node": "10:30"},        "altitude"),
+])
+def test_sso_orbit_validation(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        sun_synchronous_orbit(**kwargs)

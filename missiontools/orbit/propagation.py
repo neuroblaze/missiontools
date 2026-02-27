@@ -1,7 +1,13 @@
 import numpy as np
 import numpy.typing as npt
 from datetime import datetime
-from .constants import EARTH_MU, EARTH_J2, EARTH_MEAN_RADIUS
+from .constants import EARTH_MU, EARTH_J2, EARTH_MEAN_RADIUS, EARTH_SEMI_MAJOR_AXIS
+
+# Mean solar motion: 2π rad per Julian year (365.25 days)
+_N_SUN = 2.0 * np.pi / (365.25 * 86400.0)   # rad/s
+
+# J2000.0 epoch (same as frames.py)
+_J2000_US = np.datetime64('2000-01-01T12:00:00', 'us')
 
 
 def propagate_analytical(t: list[datetime] | npt.NDArray[np.datetime64],
@@ -204,3 +210,224 @@ def propagate_analytical(t: list[datetime] | npt.NDArray[np.datetime64],
 
     # result
     return r, v
+
+
+def sun_synchronous_inclination(
+        a: float | np.floating,
+        e: float | np.floating = 0.0,
+        central_body_mu: float | np.floating = EARTH_MU,
+        central_body_j2: float | np.floating = EARTH_J2,
+) -> float:
+    """Return the inclination (rad) required for a sun-synchronous orbit.
+
+    A sun-synchronous orbit is one whose RAAN precesses at exactly the mean
+    solar rate (+2π rad per Julian year), keeping the orbital plane at a
+    roughly constant angle with respect to the Sun. The required inclination
+    is derived by setting the J2 secular RAAN drift rate equal to the mean
+    solar motion and solving for *i*.
+
+    From Vallado eq. 9-37:
+
+    .. math::
+
+        \\dot{\\Omega} = -\\frac{3}{2} \\frac{n J_2 R^2}{p^2} \\cos i
+        \\;=\\; n_{\\odot}
+
+    Solving for inclination::
+
+        \\cos i = -\\frac{2 n_{\\odot} p^2}{3 n J_2 R^2}
+
+    where :math:`p = a(1-e^2)` is the semi-latus rectum,
+    :math:`n = \\sqrt{\\mu / a^3}` is the mean motion, and
+    :math:`J_2 R^2 = ` ``central_body_j2 / central_body_mu``.
+
+    Parameters
+    ----------
+    a : float | np.floating
+        Semi-major axis (m).
+    e : float | np.floating, optional
+        Eccentricity (dimensionless, 0 <= e < 1). Defaults to 0 (circular).
+    central_body_mu : float | np.floating, optional
+        Standard gravitational parameter (m³/s²). Defaults to ``EARTH_MU``.
+    central_body_j2 : float | np.floating, optional
+        Combined J2 parameter μ × J₂_dim × R² (m⁵/s²). Defaults to
+        ``EARTH_J2``.
+
+    Returns
+    -------
+    float
+        Sun-synchronous inclination in radians (will be in (π/2, π) for
+        a prograde-retrograde orbit around Earth, typically ~97–100°).
+
+    Raises
+    ------
+    ValueError
+        If ``a`` or ``central_body_mu`` are non-positive, if ``e`` is
+        outside [0, 1), or if no sun-synchronous orbit exists for the
+        supplied parameters (``|cos i| > 1``).
+    """
+    if a <= 0:
+        raise ValueError(f"Semi-major axis must be positive, got a={a}")
+    if not (0 <= e < 1):
+        raise ValueError(
+            f"Eccentricity must satisfy 0 <= e < 1, got e={e}"
+        )
+    if central_body_mu <= 0:
+        raise ValueError(
+            f"central_body_mu must be positive, got {central_body_mu}"
+        )
+
+    n      = np.sqrt(central_body_mu / a**3)           # mean motion (rad/s)
+    p      = a * (1.0 - e**2)                          # semi-latus rectum (m)
+    j2_r2  = central_body_j2 / central_body_mu         # J₂_dim × R²  (m²)
+
+    cos_i = (-2.0 * _N_SUN * p**2) / (3.0 * n * j2_r2)
+
+    if abs(cos_i) > 1.0:
+        raise ValueError(
+            f"No sun-synchronous orbit exists for a={a} m, e={e}: "
+            f"cos(i) = {cos_i:.4f} is outside [-1, 1]."
+        )
+
+    return float(np.arccos(cos_i))
+
+
+def sun_synchronous_orbit(
+        altitude:            float | np.floating,
+        local_time_at_node:  str,
+        node_type:           str = 'ascending',
+        epoch:               datetime | np.datetime64 | None = None,
+        central_body_mu:     float | np.floating = EARTH_MU,
+        central_body_j2:     float | np.floating = EARTH_J2,
+        central_body_radius: float | np.floating = EARTH_SEMI_MAJOR_AXIS,
+) -> dict:
+    """Return Keplerian elements for a circular sun-synchronous orbit.
+
+    Computes the RAAN such that the specified node type crosses the equator
+    at the requested local solar time on the given epoch, and the inclination
+    that produces a sun-synchronous RAAN drift rate.
+
+    The returned dict is ready to unpack directly into
+    :func:`propagate_analytical` (``propagate_analytical(t, **params)``).
+
+    Parameters
+    ----------
+    altitude : float | np.floating
+        Orbit altitude above the body's equatorial surface (m).
+    local_time_at_node : str
+        Local solar time at the specified node crossing, formatted as
+        ``"HH:MM"`` or ``"HH:MM:SS"`` (24-hour clock).
+    node_type : str, optional
+        ``'ascending'`` (default) or ``'descending'``. Indicates which node
+        crossing the local time refers to.
+    epoch : datetime | np.datetime64 | None, optional
+        Epoch at which the orbital elements are defined and the node crossing
+        occurs. Defaults to J2000.0 (``2000-01-01T12:00:00`` UTC).
+    central_body_mu : float | np.floating, optional
+        Standard gravitational parameter (m³/s²). Defaults to ``EARTH_MU``.
+    central_body_j2 : float | np.floating, optional
+        Combined J2 parameter μ × J₂_dim × R² (m⁵/s²). Defaults to
+        ``EARTH_J2``.
+    central_body_radius : float | np.floating, optional
+        Equatorial radius used for altitude→semi-major-axis conversion (m).
+        Defaults to ``EARTH_SEMI_MAJOR_AXIS`` (WGS84 equatorial radius).
+
+    Returns
+    -------
+    dict
+        Keplerian parameter dict with keys ``epoch``, ``a``, ``e``,
+        ``i``, ``arg_p``, ``raan``, ``ma``, ``central_body_mu``,
+        ``central_body_j2``, ``central_body_radius``.  All angles are in
+        radians; ``epoch`` is ``datetime64[us]``.
+
+    Raises
+    ------
+    ValueError
+        If ``local_time_at_node`` cannot be parsed, ``node_type`` is not
+        ``'ascending'`` or ``'descending'``, ``altitude`` is negative, or
+        no sun-synchronous orbit exists for the given parameters.
+    """
+    # --- epoch ---
+    if epoch is None:
+        epoch = _J2000_US
+    epoch_us = np.asarray(epoch, dtype='datetime64[us]')
+
+    # --- parse local time string ---
+    parts = local_time_at_node.strip().split(':')
+    if len(parts) == 2:
+        hh, mm, ss = parts[0], parts[1], '0'
+    elif len(parts) == 3:
+        hh, mm, ss = parts[0], parts[1], parts[2]
+    else:
+        raise ValueError(
+            f"local_time_at_node must be 'HH:MM' or 'HH:MM:SS', "
+            f"got '{local_time_at_node}'"
+        )
+    try:
+        lsol = int(hh) + int(mm) / 60.0 + int(ss) / 3600.0
+    except ValueError:
+        raise ValueError(
+            f"local_time_at_node must contain integer hour/minute/second "
+            f"fields, got '{local_time_at_node}'"
+        )
+    if not (0.0 <= lsol < 24.0):
+        raise ValueError(
+            f"Parsed local time {lsol:.4f} h is outside [0, 24), "
+            f"got '{local_time_at_node}'"
+        )
+
+    # --- validate node_type ---
+    if node_type == 'ascending':
+        ltan = lsol                       # LTAN  = specified time
+    elif node_type == 'descending':
+        ltan = (lsol + 12.0) % 24.0      # LTAN  = LTDN + 12 h
+    else:
+        raise ValueError(
+            f"node_type must be 'ascending' or 'descending', got '{node_type}'"
+        )
+
+    # --- validate altitude ---
+    if altitude < 0.0:
+        raise ValueError(f"altitude must be non-negative, got {altitude} m")
+
+    # --- Sun's right ascension at epoch (low-precision, ~0.01° accuracy) ---
+    # Algorithm: Astronomical Almanac "low-precision" solar coordinates
+    d = float((epoch_us - _J2000_US).astype(np.float64)) * 1e-6 / 86400.0   # days from J2000
+
+    L_deg = (280.460 + 0.9856474 * d) % 360.0        # Sun mean longitude (deg)
+    g_rad = np.radians((357.528 + 0.9856003 * d) % 360.0)  # Sun mean anomaly (rad)
+
+    # Ecliptic longitude (rad)
+    lambda_sun = np.radians(L_deg) + np.radians(
+        1.915 * np.sin(g_rad) + 0.020 * np.sin(2.0 * g_rad)
+    )
+
+    # Mean obliquity of the ecliptic (rad)
+    epsilon = np.radians(23.439 - 0.0000004 * d)
+
+    # Sun's right ascension (rad), wrapped to [0, 2π)
+    ra_sun = float(
+        np.arctan2(np.cos(epsilon) * np.sin(lambda_sun),
+                   np.cos(lambda_sun)) % (2.0 * np.pi)
+    )
+
+    # --- RAAN from LTAN and Sun's RA ---
+    # Derivation: LTAN (h) = 12 + (RAAN − RA_sun) × 12/π
+    raan = float((ra_sun + (ltan - 12.0) * (np.pi / 12.0)) % (2.0 * np.pi))
+
+    # --- orbital elements ---
+    a = float(central_body_radius) + float(altitude)
+    i = sun_synchronous_inclination(a, 0.0, central_body_mu, central_body_j2)
+
+    return {
+        'epoch':               epoch_us,
+        'a':                   a,
+        'e':                   0.0,
+        'i':                   i,
+        'arg_p':               0.0,
+        'raan':                raan,
+        'ma':                  0.0,
+        'central_body_mu':     float(central_body_mu),
+        'central_body_j2':     float(central_body_j2),
+        'central_body_radius': float(central_body_radius),
+    }

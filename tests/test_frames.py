@@ -1,7 +1,11 @@
 import numpy as np
 import pytest
 
-from missiontools.orbit.frames import gmst, eci_to_ecef, ecef_to_eci, geodetic_to_ecef
+from missiontools.orbit.frames import (
+    gmst, eci_to_ecef, ecef_to_eci, geodetic_to_ecef,
+    eci_to_lvlh, lvlh_to_eci,
+)
+from missiontools.orbit.propagation import propagate_analytical
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -363,3 +367,165 @@ def test_geodetic_array_returns_2d():
     lats = np.linspace(-np.pi / 2, np.pi / 2, n)
     lons = np.zeros(n)
     assert geodetic_to_ecef(lats, lons).shape == (n, 3)
+
+
+# ===========================================================================
+# eci_to_lvlh / lvlh_to_eci
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Shared fixture: propagate an ISS-like orbit for a few timesteps
+# ---------------------------------------------------------------------------
+
+_ISS_EPOCH = np.datetime64('2000-01-01T12:00:00', 'us')
+_ISS_KEPLERIAN = dict(
+    a     = 6_771_000.0,    # ~400 km altitude
+    e     = 0.0006,
+    i     = np.radians(51.6),
+    arg_p = np.radians(30.0),
+    raan  = np.radians(120.0),
+    ma    = np.radians(0.0),
+)
+
+_N_LVLH = 20
+_LVLH_TIMES = (
+    _ISS_EPOCH + np.arange(_N_LVLH) * np.timedelta64(300_000_000, 'us')  # every 5 min
+)
+
+
+@pytest.fixture(scope='module')
+def iss_states():
+    """Propagated (r_eci, v_eci) for the ISS-like orbit."""
+    return propagate_analytical(_LVLH_TIMES, _ISS_EPOCH, **_ISS_KEPLERIAN)
+
+
+# ---------------------------------------------------------------------------
+# Norm preservation
+# ---------------------------------------------------------------------------
+
+def test_eci_to_lvlh_norm_preserved(iss_states):
+    """eci_to_lvlh is a pure rotation; vector norms must be unchanged."""
+    r, v = iss_states
+    vecs = np.random.default_rng(20).standard_normal((_N_LVLH, 3)) * 7e6
+    result = eci_to_lvlh(vecs, r, v)
+    np.testing.assert_allclose(
+        np.linalg.norm(result, axis=1),
+        np.linalg.norm(vecs,   axis=1),
+        rtol=1e-12,
+    )
+
+
+def test_lvlh_to_eci_norm_preserved(iss_states):
+    """lvlh_to_eci is a pure rotation; vector norms must be unchanged."""
+    r, v = iss_states
+    vecs = np.random.default_rng(21).standard_normal((_N_LVLH, 3)) * 7e6
+    result = lvlh_to_eci(vecs, r, v)
+    np.testing.assert_allclose(
+        np.linalg.norm(result, axis=1),
+        np.linalg.norm(vecs,   axis=1),
+        rtol=1e-12,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Known geometry: axis-aligned special vectors
+# ---------------------------------------------------------------------------
+
+def test_eci_to_lvlh_radial_maps_to_x(iss_states):
+    """The position vector r must map to (|r|, 0, 0) in LVLH (the R axis)."""
+    r, v = iss_states
+    r_lvlh = eci_to_lvlh(r, r, v)
+    r_mag  = np.linalg.norm(r, axis=1)
+    np.testing.assert_allclose(r_lvlh[:, 0],  r_mag, rtol=1e-12)
+    np.testing.assert_allclose(r_lvlh[:, 1:], 0.0,   atol=1e-6)
+
+
+def test_eci_to_lvlh_angular_momentum_maps_to_z(iss_states):
+    """The angular-momentum vector h = r×v must map to (0, 0, |h|) in LVLH."""
+    r, v = iss_states
+    h     = np.cross(r, v)                             # (N, 3)
+    h_lvlh = eci_to_lvlh(h, r, v)
+    h_mag  = np.linalg.norm(h, axis=1)
+    np.testing.assert_allclose(h_lvlh[:, :2], 0.0,   atol=1e-3)
+    np.testing.assert_allclose(h_lvlh[:, 2],  h_mag, rtol=1e-12)
+
+
+def test_eci_to_lvlh_circular_velocity_maps_to_y(iss_states):
+    """For a nearly-circular orbit the velocity must map close to (0, |v|, 0)."""
+    r, v = iss_states
+    v_lvlh = eci_to_lvlh(v, r, v)
+    v_mag  = np.linalg.norm(v, axis=1)
+    # For e = 0.0006 the radial velocity component is small but non-zero;
+    # allow 1% relative tolerance on the along-track component.
+    np.testing.assert_allclose(v_lvlh[:, 1], v_mag, rtol=0.01)
+    np.testing.assert_allclose(v_lvlh[:, 2], 0.0,   atol=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# Round-trip consistency
+# ---------------------------------------------------------------------------
+
+def test_eci_to_lvlh_round_trip(iss_states):
+    """lvlh_to_eci(eci_to_lvlh(vecs, r, v), r, v) must recover vecs."""
+    r, v = iss_states
+    vecs = np.random.default_rng(22).standard_normal((_N_LVLH, 3)) * 7e6
+    recovered = lvlh_to_eci(eci_to_lvlh(vecs, r, v), r, v)
+    np.testing.assert_allclose(recovered, vecs, rtol=1e-12)
+
+
+def test_lvlh_to_eci_round_trip(iss_states):
+    """eci_to_lvlh(lvlh_to_eci(vecs, r, v), r, v) must recover vecs."""
+    r, v = iss_states
+    vecs = np.random.default_rng(23).standard_normal((_N_LVLH, 3)) * 7e6
+    recovered = eci_to_lvlh(lvlh_to_eci(vecs, r, v), r, v)
+    np.testing.assert_allclose(recovered, vecs, rtol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Mutual inverse: Q @ Qᵀ = I
+# ---------------------------------------------------------------------------
+
+def test_lvlh_eci_mutual_inverse(iss_states):
+    """Q @ Qᵀ must equal the identity matrix for every timestep."""
+    r, v = iss_states
+    # Build Q via the public function: Q[i] = eci_to_lvlh applied to each basis vector
+    eye3   = np.eye(3)
+    for basis_vec in eye3:
+        e_eci  = np.tile(basis_vec, (_N_LVLH, 1))
+        e_lvlh = eci_to_lvlh(e_eci, r, v)
+        e_back = lvlh_to_eci(e_lvlh, r, v)
+        np.testing.assert_allclose(e_back, e_eci, atol=1e-14)
+
+
+# ---------------------------------------------------------------------------
+# Output shape / scalar handling
+# ---------------------------------------------------------------------------
+
+def test_eci_to_lvlh_scalar_input(iss_states):
+    """(3,) vector input → (3,) output."""
+    r, v = iss_states
+    result = eci_to_lvlh(r[0], r[0], v[0])
+    assert result.shape == (3,)
+
+
+def test_lvlh_to_eci_scalar_input(iss_states):
+    """(3,) vector input → (3,) output."""
+    r, v = iss_states
+    result = lvlh_to_eci(r[0], r[0], v[0])
+    assert result.shape == (3,)
+
+
+def test_eci_to_lvlh_array_shape(iss_states):
+    """(N, 3) input → (N, 3) output."""
+    r, v = iss_states
+    vecs   = np.random.default_rng(24).standard_normal((_N_LVLH, 3)) * 7e6
+    result = eci_to_lvlh(vecs, r, v)
+    assert result.shape == (_N_LVLH, 3)
+
+
+def test_lvlh_to_eci_array_shape(iss_states):
+    """(N, 3) input → (N, 3) output."""
+    r, v = iss_states
+    vecs   = np.random.default_rng(25).standard_normal((_N_LVLH, 3)) * 7e6
+    result = lvlh_to_eci(vecs, r, v)
+    assert result.shape == (_N_LVLH, 3)
