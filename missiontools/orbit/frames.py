@@ -241,3 +241,40 @@ def lvlh_to_eci(vecs:  npt.NDArray[np.floating],
     Q      = _lvlh_basis(np.atleast_2d(r_eci), np.atleast_2d(v_eci))  # (N,3,3)
     result = np.einsum('nji,nj->ni', Q, np.atleast_2d(vecs))           # Qᵀ applied
     return result[0] if scalar else result
+
+
+def sun_vec_eci(
+        t: np.datetime64 | npt.NDArray[np.datetime64],
+) -> npt.NDArray[np.floating]:
+    """Unit vector(s) pointing toward the Sun in the ECI frame.
+
+    Uses the Astronomical Almanac low-precision solar coordinates
+    (~0.01° accuracy).  The Sun's ecliptic longitude is converted to ECI
+    (mean equatorial J2000) by rotating by the mean obliquity about the
+    x-axis.
+
+    Parameters
+    ----------
+    t : np.datetime64 | npt.NDArray[np.datetime64]
+        Epoch(s) as ``datetime64[us]``.  Scalar or ``(N,)`` array.
+
+    Returns
+    -------
+    npt.NDArray[np.floating]
+        Unit vector(s) toward the Sun in ECI.  Shape ``(3,)`` for a
+        scalar epoch, ``(N, 3)`` for an array of N epochs.
+    """
+    t      = np.asarray(t, dtype='datetime64[us]')
+    scalar = t.ndim == 0
+    t      = np.atleast_1d(t)
+
+    d   = (t - _J2000_US).astype(np.float64) * 1e-6 / 86400.0
+    L   = np.radians((280.460  + 0.9856474 * d) % 360.0)
+    g   = np.radians((357.528  + 0.9856003 * d) % 360.0)
+    lam = L + np.radians(1.915 * np.sin(g) + 0.020 * np.sin(2.0 * g))
+    eps = np.radians(23.439 - 0.0000004 * d)
+
+    result = np.stack([np.cos(lam),
+                       np.sin(lam) * np.cos(eps),
+                       np.sin(lam) * np.sin(eps)], axis=-1)  # (N, 3)
+    return result[0] if scalar else result

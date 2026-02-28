@@ -3,7 +3,7 @@ import pytest
 
 from missiontools.orbit.frames import (
     gmst, eci_to_ecef, ecef_to_eci, geodetic_to_ecef,
-    eci_to_lvlh, lvlh_to_eci,
+    eci_to_lvlh, lvlh_to_eci, sun_vec_eci,
 )
 from missiontools.orbit.propagation import propagate_analytical
 
@@ -529,3 +529,75 @@ def test_lvlh_to_eci_array_shape(iss_states):
     vecs   = np.random.default_rng(25).standard_normal((_N_LVLH, 3)) * 7e6
     result = lvlh_to_eci(vecs, r, v)
     assert result.shape == (_N_LVLH, 3)
+
+
+# ===========================================================================
+# sun_vec_eci
+# ===========================================================================
+
+_N_SUN  = 365
+_SUN_TIMES = (
+    _J2000_US + np.arange(_N_SUN) * np.timedelta64(86_400_000_000, 'us')   # daily for 1 year
+)
+
+
+def _ra_sun_expected(d: np.ndarray) -> np.ndarray:
+    """Replicate the propagation.py RA formula independently for testing."""
+    g   = np.radians((357.528 + 0.9856003 * d) % 360.0)
+    lam = (np.radians((280.460 + 0.9856474 * d) % 360.0)
+           + np.radians(1.915 * np.sin(g) + 0.020 * np.sin(2.0 * g)))
+    eps = np.radians(23.439 - 0.0000004 * d)
+    return np.arctan2(np.cos(eps) * np.sin(lam), np.cos(lam)) % (2.0 * np.pi)
+
+
+# ---------------------------------------------------------------------------
+# Unit norm
+# ---------------------------------------------------------------------------
+
+def test_sun_vec_eci_unit_norm():
+    """Output vectors must all be unit length."""
+    result = sun_vec_eci(_SUN_TIMES)
+    np.testing.assert_allclose(np.linalg.norm(result, axis=1), 1.0, rtol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Output shape / scalar handling
+# ---------------------------------------------------------------------------
+
+def test_sun_vec_eci_scalar_input():
+    """Scalar datetime64 → shape (3,)."""
+    assert sun_vec_eci(_J2000_US).shape == (3,)
+
+
+def test_sun_vec_eci_array_input_shape():
+    """(N,) datetime64 → shape (N, 3)."""
+    assert sun_vec_eci(_SUN_TIMES).shape == (_N_SUN, 3)
+
+
+# ---------------------------------------------------------------------------
+# Physical properties
+# ---------------------------------------------------------------------------
+
+def test_sun_vec_eci_declination_bounded():
+    """Sun declination |arcsin(z)| must not exceed the obliquity (~23.44°)."""
+    result  = sun_vec_eci(_SUN_TIMES)
+    dec_deg = np.degrees(np.arcsin(np.clip(result[:, 2], -1.0, 1.0)))
+    assert np.all(np.abs(dec_deg) <= 23.45)
+
+
+def test_sun_vec_eci_ra_consistency():
+    """arctan2(y, x) of the output must match the RA from the independent formula."""
+    result = sun_vec_eci(_SUN_TIMES)
+    d      = np.arange(_N_SUN, dtype=np.float64)   # days from J2000
+    ra_ref = _ra_sun_expected(d)
+    ra_vec = np.arctan2(result[:, 1], result[:, 0]) % (2.0 * np.pi)
+    np.testing.assert_allclose(ra_vec, ra_ref, atol=1e-12)
+
+
+def test_sun_vec_eci_known_direction_at_j2000():
+    """At J2000 (early January) the Sun is in Sagittarius: RA ≈ 280°, Dec ≈ −23°.
+    The x-component of the ECI vector should be positive (cos 280° > 0) and
+    the z-component should be negative (Sun south of equator in January)."""
+    v = sun_vec_eci(_J2000_US)
+    assert v[0] > 0.0, "x-component should be positive (RA ≈ 280°)"
+    assert v[2] < 0.0, "z-component should be negative (Dec ≈ −23°)"
