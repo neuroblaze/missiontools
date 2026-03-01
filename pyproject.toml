@@ -12,6 +12,8 @@ dependencies = [
     "scipy",
     "matplotlib",
     "skyfield",
+    "pyshp",
+    "shapely",
 ]
 
 [project.optional-dependencies]

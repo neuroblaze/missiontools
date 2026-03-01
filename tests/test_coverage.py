@@ -1,7 +1,8 @@
 import numpy as np
 import pytest
 
-from missiontools.coverage import sample_aoi, sample_region, coverage_fraction, revisit_time
+from missiontools.coverage import (sample_aoi, sample_region, sample_shapefile,
+                                   coverage_fraction, revisit_time, pointwise_coverage)
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -413,3 +414,271 @@ class TestRevisitTimeFov:
             revisit_time(lat, lon, _ISS, _T_START, _T_END,
                          max_step=_STEP,
                          fov_pointing_lvlh=_NADIR_LVLH)
+
+
+# ===========================================================================
+# Solar zenith angle constraint
+# ===========================================================================
+
+_SZA_90 = np.radians(90.0)   # horizon — splits day/night exactly
+
+
+class TestCoverageFractionSza:
+
+    def test_sza_daytime_reduces_or_equals_coverage(self):
+        """Restricting to daytime (SZA ≤ 90°) gives ≤ fraction than unconstrained."""
+        lat, lon = _sample_uk(20)
+        kw = dict(keplerian_params=_ISS, t_start=_T_START, t_end=_T_END,
+                  max_step=_STEP)
+        r_base = coverage_fraction(lat, lon, **kw)
+        r_day  = coverage_fraction(lat, lon, **kw, sza_max=_SZA_90)
+        assert r_day['mean_fraction'] <= r_base['mean_fraction'] + 1e-6
+
+    def test_sza_nighttime_reduces_or_equals_coverage(self):
+        """Restricting to nighttime (SZA ≥ 90°) gives ≤ fraction than unconstrained."""
+        lat, lon = _sample_uk(20)
+        kw = dict(keplerian_params=_ISS, t_start=_T_START, t_end=_T_END,
+                  max_step=_STEP)
+        r_base  = coverage_fraction(lat, lon, **kw)
+        r_night = coverage_fraction(lat, lon, **kw, sza_min=_SZA_90)
+        assert r_night['mean_fraction'] <= r_base['mean_fraction'] + 1e-6
+
+    def test_sza_day_and_night_partition_unconstrained(self):
+        """Per-timestep day + night fractions must sum to the unconstrained fraction."""
+        lat, lon = _sample_uk(20)
+        kw = dict(keplerian_params=_ISS, t_start=_T_START, t_end=_T_END,
+                  max_step=_STEP)
+        r_base  = coverage_fraction(lat, lon, **kw)
+        r_day   = coverage_fraction(lat, lon, **kw, sza_max=_SZA_90)
+        r_night = coverage_fraction(lat, lon, **kw, sza_min=_SZA_90)
+        combined = r_day['fraction'] + r_night['fraction']
+        np.testing.assert_allclose(combined, r_base['fraction'], atol=1e-6)
+
+    def test_sza_full_range_matches_no_constraint(self):
+        """sza_max=π covers all illumination angles — identical to no constraint."""
+        lat, lon = _sample_uk(20)
+        kw = dict(keplerian_params=_ISS, t_start=_T_START, t_end=_T_END,
+                  max_step=_STEP)
+        r_base = coverage_fraction(lat, lon, **kw)
+        r_all  = coverage_fraction(lat, lon, **kw, sza_max=np.radians(180.0))
+        np.testing.assert_array_equal(r_base['fraction'], r_all['fraction'])
+
+    def test_sza_no_overlap_day_night(self):
+        """A timestep cannot be both daytime and nighttime for the same point."""
+        lat, lon = _sample_uk(20)
+        kw = dict(keplerian_params=_ISS, t_start=_T_START, t_end=_T_END,
+                  max_step=_STEP)
+        r_day   = coverage_fraction(lat, lon, **kw, sza_max=_SZA_90)
+        r_night = coverage_fraction(lat, lon, **kw, sza_min=_SZA_90)
+        # At each timestep a point is either day or night, never both
+        overlap = r_day['fraction'] * r_night['fraction']
+        # overlap > 0 only if same point is simultaneously day AND night, impossible
+        # (points exactly at the terminator can round to both; allow small tolerance)
+        assert np.all(overlap < 1e-5)
+
+
+class TestRevisitTimeSza:
+
+    def test_sza_daytime_revisit_ge_unconstrained(self):
+        """Daytime-only revisit time must be ≥ unconstrained (fewer valid passes)."""
+        lat, lon = _sample_uk(15)
+        kw = dict(keplerian_params=_ISS, t_start=_T_START, t_end=_T_END,
+                  max_step=_STEP)
+        r_base = revisit_time(lat, lon, **kw)
+        r_day  = revisit_time(lat, lon, **kw, sza_max=_SZA_90)
+        base_mean = r_base['global_mean']
+        day_mean  = r_day['global_mean']
+        if not np.isnan(day_mean) and not np.isnan(base_mean):
+            assert day_mean >= base_mean - 1e-6
+
+
+# ===========================================================================
+# pointwise_coverage
+# ===========================================================================
+
+_N_PW_PTS = 20   # small M for speed
+
+def _kw_pw(**extra):
+    """Common kwargs for pointwise_coverage tests."""
+    return dict(keplerian_params=_ISS, t_start=_T_START, t_end=_T_END,
+                max_step=_STEP, **extra)
+
+
+class TestPointwiseCoverage:
+
+    def test_shape(self):
+        """visible must have shape (N, M) and t shape (N,)."""
+        lat, lon = _sample_uk(_N_PW_PTS)
+        result = pointwise_coverage(lat, lon, **_kw_pw())
+        N = len(result['t'])
+        M = len(lat)
+        assert result['visible'].shape == (N, M)
+        assert result['visible'].dtype == np.bool_
+
+    def test_lat_lon_alt_passthrough(self):
+        """Returned lat/lon/alt must match the inputs exactly."""
+        lat, lon = _sample_uk(_N_PW_PTS)
+        result = pointwise_coverage(lat, lon, **_kw_pw(alt=500.0))
+        np.testing.assert_array_equal(result['lat'], lat)
+        np.testing.assert_array_equal(result['lon'], lon)
+        assert result['alt'] == 500.0
+
+    def test_consistent_with_coverage_fraction(self):
+        """visible.mean(axis=1) must equal coverage_fraction 'fraction' output."""
+        lat, lon = _sample_uk(_N_PW_PTS)
+        kw = _kw_pw()
+        pw = pointwise_coverage(lat, lon, **kw)
+        cf = coverage_fraction(lat, lon, **kw)
+        # Both use the same propagation path — agreement should be exact
+        inst = pw['visible'].mean(axis=1).astype(np.float32)
+        np.testing.assert_allclose(inst, cf['fraction'], atol=1e-6)
+
+    def test_with_fov(self):
+        """FOV constraint: every constrained point is also in unconstrained set."""
+        lat, lon = _sample_uk(_N_PW_PTS)
+        nadir = np.array([-1.0, 0.0, 0.0])
+        kw = _kw_pw()
+        base = pointwise_coverage(lat, lon, **kw)
+        fov  = pointwise_coverage(lat, lon, **kw,
+                                  fov_pointing_lvlh=nadir,
+                                  fov_half_angle=np.radians(30.0))
+        # FOV-constrained visibility is a subset of unconstrained
+        assert (fov['visible'] & ~base['visible']).sum() == 0
+
+    def test_with_sza(self):
+        """SZA constraint: daytime-only visible ≤ unconstrained."""
+        lat, lon = _sample_uk(_N_PW_PTS)
+        kw = _kw_pw()
+        base = pointwise_coverage(lat, lon, **kw)
+        day  = pointwise_coverage(lat, lon, **kw, sza_max=np.pi / 2)
+        assert (day['visible'] & ~base['visible']).sum() == 0
+
+    def test_empty_window(self):
+        """t_start == t_end returns empty arrays without raising."""
+        lat, lon = _sample_uk(5)
+        result = pointwise_coverage(lat, lon,
+                                    keplerian_params=_ISS,
+                                    t_start=_T_START, t_end=_T_START,
+                                    max_step=_STEP)
+        assert len(result['t']) == 0
+        assert result['visible'].shape == (0, 5)
+
+
+# ===========================================================================
+# sample_shapefile
+# ===========================================================================
+
+def _make_shapefile(tmp_path, rings_lon_lat_deg, name='test'):
+    """Write a single-feature Polygon shapefile; return path to .shp."""
+    import shapefile as _pyshp
+    path = str(tmp_path / f'{name}.shp')
+    w = _pyshp.Writer(path, shapeType=5)
+    w.field('name', 'C')
+    w.poly(rings_lon_lat_deg)   # [[outer], [hole], ...]  coords in (lon, lat)°
+    w.record(name)
+    w.close()
+    return path
+
+
+def _make_two_feature_shapefile(tmp_path, rings_a, rings_b):
+    """Write a two-feature Polygon shapefile; return path to .shp."""
+    import shapefile as _pyshp
+    path = str(tmp_path / 'two.shp')
+    w = _pyshp.Writer(path, shapeType=5)
+    w.field('name', 'C')
+    w.poly(rings_a); w.record('A')
+    w.poly(rings_b); w.record('B')
+    w.close()
+    return path
+
+
+# A roughly 10° × 10° box centred on 0°N, 10°E (in degrees, lon before lat)
+_BOX_10E = [[(5.0, -5.0), (15.0, -5.0), (15.0, 5.0), (5.0, 5.0), (5.0, -5.0)]]
+
+# A roughly 10° × 10° box centred on 30°N, 30°E
+_BOX_30E = [[(25.0, 25.0), (35.0, 25.0), (35.0, 35.0), (25.0, 35.0), (25.0, 25.0)]]
+
+# A small box centred exactly on the antimeridian: lons 175° → 185° (= −175°)
+# Represented with extended longitudes so the ring doesn't jump.
+_BOX_AM  = [[(175.0, -5.0), (185.0, -5.0), (185.0, 5.0), (175.0, 5.0), (175.0, -5.0)]]
+
+
+class TestSampleShapefile:
+
+    def test_returns_two_arrays(self, tmp_path):
+        path = _make_shapefile(tmp_path, _BOX_10E)
+        lat, lon = sample_shapefile(path, point_density=5e12)
+        assert isinstance(lat, np.ndarray)
+        assert isinstance(lon, np.ndarray)
+        assert lat.shape == lon.shape
+        assert len(lat) > 0
+
+    def test_all_inside_polygon(self, tmp_path):
+        """Every returned point must lie inside the shapefile geometry."""
+        import shapely
+        from shapely.geometry import Polygon
+        path = _make_shapefile(tmp_path, _BOX_10E)
+        lat, lon = sample_shapefile(path, point_density=5e12)
+        geom = Polygon(_BOX_10E[0])
+        inside = shapely.contains_xy(geom, np.degrees(lon), np.degrees(lat))
+        assert inside.all(), f"{(~inside).sum()} point(s) outside polygon"
+
+    def test_denser_density_gives_more_points(self, tmp_path):
+        path = _make_shapefile(tmp_path, _BOX_10E)
+        _, lon_coarse = sample_shapefile(path, point_density=2e12)
+        _, lon_dense  = sample_shapefile(path, point_density=5e11)
+        assert len(lon_dense) > len(lon_coarse)
+
+    def test_feature_index_single(self, tmp_path):
+        """feature_index selects one shape; lat range is within that feature only."""
+        path = _make_two_feature_shapefile(tmp_path, _BOX_10E, _BOX_30E)
+        # feature 0 is _BOX_10E (lat -5°…5°), feature 1 is _BOX_30E (lat 25°…35°)
+        lat_f0, _ = sample_shapefile(path, feature_index=0, point_density=1e10)
+        assert len(lat_f0) > 0
+        # All points must lie in the latitude range of feature 0 (±5°)
+        assert (np.degrees(lat_f0) >= -5.5).all()
+        assert (np.degrees(lat_f0) <=  5.5).all()
+
+    def test_polygon_with_hole(self, tmp_path):
+        """Points must not fall inside the hole of a donut polygon."""
+        import shapely
+        from shapely.geometry import Polygon
+        # Outer ring 5°×5°; inner hole 2°×2°
+        outer = [(0.0, 0.0), (5.0, 0.0), (5.0, 5.0), (0.0, 5.0), (0.0, 0.0)]
+        hole  = [(1.5, 1.5), (3.5, 1.5), (3.5, 3.5), (1.5, 3.5), (1.5, 1.5)]
+        path  = _make_shapefile(tmp_path, [outer, hole])
+        lat, lon = sample_shapefile(path, point_density=1e11)
+        hole_geom = Polygon(hole)
+        in_hole = shapely.contains_xy(hole_geom, np.degrees(lon), np.degrees(lat))
+        assert not in_hole.any(), f"{in_hole.sum()} point(s) inside hole"
+
+    def test_antimeridian_polygon(self, tmp_path):
+        """Points from an antimeridian-crossing box must be near ±180°."""
+        path = _make_shapefile(tmp_path, _BOX_AM)
+        lat, lon = sample_shapefile(path, point_density=5e12)
+        assert len(lat) > 0
+        # All returned longitudes should be > 175° or < -175°
+        lon_deg = np.degrees(lon)
+        assert ((lon_deg > 175.0) | (lon_deg < -175.0)).all(), \
+            f"Points not near antimeridian: {lon_deg}"
+
+    def test_nonexistent_file_raises(self, tmp_path):
+        with pytest.raises(Exception):   # pyshp raises ShapefileException (OSError subclass)
+            sample_shapefile(str(tmp_path / 'missing.shp'))
+
+    def test_nonpolygon_shapefile_raises(self, tmp_path):
+        """A point or polyline shapefile must raise ValueError."""
+        import shapefile as _pyshp
+        path = str(tmp_path / 'pts.shp')
+        w = _pyshp.Writer(path, shapeType=1)   # POINT
+        w.field('id', 'N')
+        w.point(10.0, 20.0)
+        w.record(1)
+        w.close()
+        with pytest.raises(ValueError, match="No polygon features"):
+            sample_shapefile(path)
+
+    def test_nonpositive_density_raises(self, tmp_path):
+        path = _make_shapefile(tmp_path, _BOX_10E)
+        with pytest.raises(ValueError, match="point_density"):
+            sample_shapefile(path, point_density=0)

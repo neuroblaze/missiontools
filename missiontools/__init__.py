@@ -21,3 +21,6 @@ Conventions
 """
 
 __version__ = "0.1.0"
+
+from .spacecraft import Spacecraft
+from .attitude import AttitudeLaw

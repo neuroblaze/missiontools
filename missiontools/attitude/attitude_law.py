@@ -1,0 +1,306 @@
+"""
+AttitudeLaw
+===========
+Spacecraft/sensor pointing law with full quaternion internal storage.
+"""
+from __future__ import annotations
+
+import numpy as np
+import numpy.typing as npt
+
+from ..orbit.frames import (eci_to_ecef, eci_to_lvlh,
+                             ecef_to_eci, lvlh_to_eci)
+from ..orbit.propagation import propagate_analytical
+
+_VALID_FRAMES = frozenset({'lvlh', 'eci', 'ecef'})
+
+
+# ---------------------------------------------------------------------------
+# Private quaternion helpers
+# ---------------------------------------------------------------------------
+
+def _q_compose(q1: npt.NDArray, q2: npt.NDArray) -> npt.NDArray:
+    """Quaternion product q1 ⊗ q2, both [w, x, y, z]."""
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+    return np.array([
+        w1*w2 - x1*x2 - y1*y2 - z1*z2,
+        w1*x2 + x1*w2 + y1*z2 - z1*y2,
+        w1*y2 - x1*z2 + y1*w2 + z1*x2,
+        w1*z2 + x1*y2 - y1*x2 + z1*w2,
+    ])
+
+
+def _q_from_vec(vec: npt.NDArray, roll: float = 0.0) -> npt.NDArray:
+    """Minimum-rotation quaternion aligning body-z to *vec*, then optional roll.
+
+    Parameters
+    ----------
+    vec : npt.NDArray, shape (3,)
+        Target boresight direction (need not be a unit vector).
+    roll : float
+        Roll angle (rad) about the boresight axis.  Default 0 gives the
+        minimum rotation from identity that aligns body-z with *vec*.
+
+    Returns
+    -------
+    npt.NDArray, shape (4,)
+        Unit quaternion [w, x, y, z].
+    """
+    v = vec / np.linalg.norm(vec)
+    dot = v[2]                           # np.dot([0,0,1], v) = v[2]
+
+    if dot < -0.9999:
+        # 180° edge case: rotate about x-axis
+        q_min = np.array([0., 1., 0., 0.])
+    else:
+        # Half-angle construction: axis = [0,0,1] × v, w = 1 + cos θ
+        axis = np.cross([0., 0., 1.], v)  # = [-v[1], v[0], 0]
+        half = np.append(1.0 + dot, axis)
+        q_min = half / np.linalg.norm(half)
+
+    if roll == 0.0:
+        return q_min
+
+    # Roll = rotation about body-z (boresight), composed BEFORE q_min
+    q_roll = np.array([np.cos(roll / 2), 0., 0., np.sin(roll / 2)])
+    return _q_compose(q_min, q_roll)
+
+
+def _q_boresight(q: npt.NDArray) -> npt.NDArray:
+    """Boresight direction (body-z rotated by quaternion q).
+
+    Returns the third column of the DCM corresponding to *q*.
+
+    Parameters
+    ----------
+    q : npt.NDArray, shape (4,)
+        Unit quaternion [w, x, y, z].
+
+    Returns
+    -------
+    npt.NDArray, shape (3,)
+        Unit pointing vector in the quaternion's reference frame.
+    """
+    w, x, y, z = q
+    return np.array([
+        2.0 * (x*z + w*y),
+        2.0 * (y*z - w*x),
+        w**2 - x**2 - y**2 + z**2,
+    ])
+
+
+# Nadir quaternion (body-z = −R̂, body-x = Ŝ, body-y = −Ŵ, right-handed)
+# DCM (body→LVLH): columns = [[0,1,0], [0,0,-1], [-1,0,0]]
+# det = +1; _q_boresight(_NADIR_Q) = [-1, 0, 0]  ✓
+_NADIR_Q = np.array([-0.5, 0.5, 0.5, -0.5])
+
+
+# ---------------------------------------------------------------------------
+# AttitudeLaw
+# ---------------------------------------------------------------------------
+
+class AttitudeLaw:
+    """Spacecraft/sensor pointing law with full quaternion internal storage.
+
+    Do not construct directly — use the factory classmethods:
+    :meth:`fixed`, :meth:`track`, :meth:`nadir`.
+
+    Boresight convention
+    --------------------
+    The sensor/spacecraft boresight is always **body-z**.  The pointing
+    methods return this axis expressed in the requested frame.
+
+    Modes
+    -----
+    ``'fixed'``
+        A constant body orientation in a given reference frame, stored as a
+        unit quaternion ``[w, x, y, z]``.
+    ``'track'``
+        Points from the host spacecraft toward a target
+        :class:`~missiontools.Spacecraft`.  The 2-DOF pointing direction is
+        fully defined; the roll DOF is reserved for a future release.
+
+    Examples
+    --------
+    Nadir pointing::
+
+        from missiontools import AttitudeLaw
+        law = AttitudeLaw.nadir()
+        p_eci = law.pointing_eci(r, v, t)
+
+    Track a target spacecraft::
+
+        from missiontools import Spacecraft, AttitudeLaw
+        target = Spacecraft(...)
+        law    = AttitudeLaw.track(target)
+
+    Fixed attitude in LVLH (e.g., body-z pointing along-track)::
+
+        law = AttitudeLaw.fixed([0, 1, 0], 'lvlh')
+    """
+
+    def __init__(self, mode: str, *,
+                 q: npt.NDArray | None = None,
+                 frame: str | None = None,
+                 target=None):
+        self._mode   = mode    # 'fixed' | 'track'
+        self._q      = q       # (4,) unit ndarray [w,x,y,z], or None
+        self._frame  = frame   # 'lvlh' | 'eci' | 'ecef', or None
+        self._target = target  # Spacecraft, or None
+        # Pre-compute boresight direction in the reference frame for 'fixed'
+        self._pointing_in_ref = _q_boresight(q) if q is not None else None
+
+    # ------------------------------------------------------------------
+    # Factory classmethods
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def fixed(cls, vector, frame: str,
+              roll: float = 0.0) -> AttitudeLaw:
+        """Fixed attitude law: constant body orientation in a given frame.
+
+        Parameters
+        ----------
+        vector : array_like, shape (3,)
+            Boresight direction (body-z) expressed in ``frame``.  Need not
+            be a unit vector — it is normalised on input.
+        frame : {'lvlh', 'eci', 'ecef'}
+            Reference frame in which ``vector`` is expressed.
+        roll : float, optional
+            Roll angle (rad) about the boresight axis.  Default 0 gives the
+            minimum rotation from identity that aligns body-z with ``vector``.
+
+        Raises
+        ------
+        ValueError
+            If ``frame`` is not recognised or ``vector`` is the zero vector.
+        """
+        vec = np.asarray(vector, dtype=np.float64)
+        if vec.shape != (3,):
+            raise ValueError(
+                f"vector must have shape (3,), got {vec.shape}"
+            )
+        if np.linalg.norm(vec) == 0.0:
+            raise ValueError("vector must not be the zero vector")
+        if frame not in _VALID_FRAMES:
+            raise ValueError(
+                f"frame must be one of {sorted(_VALID_FRAMES)}, got {frame!r}"
+            )
+        q = _q_from_vec(vec, roll)
+        return cls('fixed', q=q, frame=frame)
+
+    @classmethod
+    def track(cls, target) -> AttitudeLaw:
+        """Target-tracking attitude law: boresight always points toward target.
+
+        Parameters
+        ----------
+        target : Spacecraft
+            The spacecraft to track.
+
+        Raises
+        ------
+        TypeError
+            If ``target`` is not a :class:`~missiontools.Spacecraft`.
+        """
+        from ..spacecraft import Spacecraft  # local import avoids circular dep
+        if not isinstance(target, Spacecraft):
+            raise TypeError(
+                f"target must be a Spacecraft instance, "
+                f"got {type(target).__name__!r}"
+            )
+        return cls('track', target=target)
+
+    @classmethod
+    def nadir(cls) -> AttitudeLaw:
+        """Earth-nadir pointing law (body-z = −R̂ in LVLH).
+
+        Full 3-DOF convention: body-z = nadir (−R̂), body-x = along-track (Ŝ),
+        body-y = −orbit-normal (−Ŵ).  This is a right-handed body frame.
+
+        Equivalent to ``fixed([-1, 0, 0], 'lvlh')`` with a specific roll
+        chosen so that body-x aligns with the along-track direction.
+        """
+        return cls('fixed', q=_NADIR_Q.copy(), frame='lvlh')
+
+    # ------------------------------------------------------------------
+    # Pointing methods
+    # ------------------------------------------------------------------
+
+    def pointing_eci(self,
+                     r_eci: npt.ArrayLike,
+                     v_eci: npt.ArrayLike,
+                     t: npt.ArrayLike,
+                     ) -> npt.NDArray[np.floating]:
+        """Boresight unit vector(s) in the ECI frame.
+
+        Parameters
+        ----------
+        r_eci : array_like, shape ``(N, 3)`` or ``(3,)``
+            Host spacecraft ECI position(s) (m).
+        v_eci : array_like, shape ``(N, 3)`` or ``(3,)``
+            Host spacecraft ECI velocity(s) (m s⁻¹).
+        t : array_like of datetime64, shape ``(N,)`` or scalar
+            Observation epoch(s).
+
+        Returns
+        -------
+        npt.NDArray[np.floating]
+            Unit pointing vector(s) in ECI, shape ``(N, 3)`` for array
+            inputs or ``(3,)`` for scalar inputs.
+        """
+        r     = np.asarray(r_eci, dtype=np.float64)
+        scalar = r.ndim == 1
+        r_2d  = np.atleast_2d(r)
+        v_2d  = np.atleast_2d(np.asarray(v_eci, dtype=np.float64))
+        t_arr = np.atleast_1d(np.asarray(t, dtype='datetime64[us]'))
+        N     = len(r_2d)
+
+        if self._mode == 'fixed':
+            tile = np.tile(self._pointing_in_ref, (N, 1))  # (N, 3)
+            if   self._frame == 'eci':  vecs = tile
+            elif self._frame == 'lvlh': vecs = lvlh_to_eci(tile, r_2d, v_2d)
+            else:                       vecs = ecef_to_eci(tile, t_arr)
+        else:  # 'track'
+            r_tgt, _ = propagate_analytical(
+                t_arr, **self._target.keplerian_params,
+                type=self._target.propagator_type,
+            )
+            vecs = r_tgt - r_2d
+
+        result = vecs / np.linalg.norm(vecs, axis=1, keepdims=True)
+        return result[0] if scalar else result
+
+    def pointing_lvlh(self,
+                      r_eci: npt.ArrayLike,
+                      v_eci: npt.ArrayLike,
+                      t: npt.ArrayLike,
+                      ) -> npt.NDArray[np.floating]:
+        """Boresight unit vector(s) in the LVLH frame.
+
+        Parameters mirror :meth:`pointing_eci`.
+        """
+        r     = np.asarray(r_eci, dtype=np.float64)
+        scalar = r.ndim == 1
+        r_2d  = np.atleast_2d(r)
+        v_2d  = np.atleast_2d(np.asarray(v_eci, dtype=np.float64))
+        eci   = np.atleast_2d(self.pointing_eci(r_eci, v_eci, t))  # (N, 3)
+        result = eci_to_lvlh(eci, r_2d, v_2d)
+        return result[0] if scalar else result
+
+    def pointing_ecef(self,
+                      r_eci: npt.ArrayLike,
+                      v_eci: npt.ArrayLike,
+                      t: npt.ArrayLike,
+                      ) -> npt.NDArray[np.floating]:
+        """Boresight unit vector(s) in the ECEF frame.
+
+        Parameters mirror :meth:`pointing_eci`.
+        """
+        r     = np.asarray(r_eci, dtype=np.float64)
+        scalar = r.ndim == 1
+        t_arr = np.atleast_1d(np.asarray(t, dtype='datetime64[us]'))
+        eci   = np.atleast_2d(self.pointing_eci(r_eci, v_eci, t))  # (N, 3)
+        result = eci_to_ecef(eci, t_arr)
+        return result[0] if scalar else result

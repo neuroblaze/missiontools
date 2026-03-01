@@ -11,3 +11,7 @@ Planned functionality
 - Pointing budget / error analysis
 - Sensor modelling (star tracker, sun sensor, magnetometer)
 """
+
+from .attitude_law import AttitudeLaw
+
+__all__ = ['AttitudeLaw']

@@ -2,7 +2,7 @@ import numpy as np
 import numpy.typing as npt
 from matplotlib.path import Path as _MplPath
 
-from ..orbit.frames import geodetic_to_ecef, eci_to_ecef, lvlh_to_eci
+from ..orbit.frames import geodetic_to_ecef, eci_to_ecef, lvlh_to_eci, sun_vec_eci
 from ..orbit.propagation import propagate_analytical
 from ..orbit.constants import EARTH_MEAN_RADIUS
 
@@ -45,6 +45,61 @@ def _build_gs(lat: npt.NDArray,
     return gs_ecef, up
 
 
+def _sun_ecef(t_arr: npt.NDArray) -> npt.NDArray:   # (T, 3)
+    """Sun unit vector in ECEF at each timestep."""
+    return eci_to_ecef(sun_vec_eci(t_arr), t_arr)
+
+
+def _parse_constraints(
+        fov_pointing_lvlh, fov_half_angle, sza_max, sza_min,
+) -> tuple:
+    """Validate FOV and SZA parameters; return precomputed values."""
+    _fov_given = (fov_pointing_lvlh is not None, fov_half_angle is not None)
+    if any(_fov_given) and not all(_fov_given):
+        raise ValueError("fov_pointing_lvlh and fov_half_angle must both be "
+                         "provided together")
+    use_fov = all(_fov_given)
+    pointing_lvlh_norm = cos_fov = None
+    if use_fov:
+        pointing_lvlh_norm = (np.asarray(fov_pointing_lvlh, dtype=np.float64)
+                              / np.linalg.norm(fov_pointing_lvlh))
+        cos_fov = float(np.cos(fov_half_angle))
+
+    use_sza      = sza_max is not None or sza_min is not None
+    cos_sza_max_ = float(np.cos(sza_max)) if sza_max is not None else None
+    cos_sza_min_ = float(np.cos(sza_min)) if sza_min is not None else None
+
+    return use_fov, pointing_lvlh_norm, cos_fov, use_sza, cos_sza_max_, cos_sza_min_
+
+
+def _compute_vis_batch(
+        t_batch,
+        keplerian_params:  dict,
+        propagator_type:   str,
+        gs_ecef:           npt.NDArray,
+        up:                npt.NDArray,
+        sin_el_min:        float,
+        use_fov:           bool,
+        pointing_lvlh_norm: npt.NDArray | None,
+        cos_fov:           float | None,
+        use_sza:           bool,
+        cos_sza_max_:      float | None,
+        cos_sza_min_:      float | None,
+) -> npt.NDArray[np.bool_]:              # (T, M)
+    """Propagate one batch and return the visibility matrix."""
+    r, v    = propagate_analytical(t_batch, **keplerian_params,
+                                   type=propagator_type)
+    pt_ecef = (_pointing_ecef(pointing_lvlh_norm, r, v, t_batch)
+               if use_fov else None)
+    sun_e   = _sun_ecef(t_batch) if use_sza else None
+    return _visibility(r, t_batch, gs_ecef, up, sin_el_min,
+                       pointing_ecef=pt_ecef,
+                       cos_fov=cos_fov if use_fov else None,
+                       sun_ecef=sun_e,
+                       cos_sza_max=cos_sza_max_,
+                       cos_sza_min=cos_sza_min_)
+
+
 def _pointing_ecef(pointing_lvlh: npt.NDArray,   # (3,) unit vector in LVLH
                    r_eci:         npt.NDArray,   # (T, 3)
                    v_eci:         npt.NDArray,   # (T, 3)
@@ -63,11 +118,16 @@ def _visibility(r_eci:          npt.NDArray,         # (T, 3)
                 sin_el_min:     float,
                 pointing_ecef:  npt.NDArray | None = None,  # (T, 3)
                 cos_fov:        float | None = None,
+                sun_ecef:       npt.NDArray | None = None,  # (T, 3)
+                cos_sza_max:    float | None = None,
+                cos_sza_min:    float | None = None,
                 ) -> npt.NDArray[np.bool_]:          # (T, M)
     """Vectorised visibility: T satellite positions × M ground points.
 
-    When ``pointing_ecef`` and ``cos_fov`` are supplied (pre-converted once per
-    batch by the caller) a FOV cone constraint is ANDed with the elevation mask.
+    Optional constraints (each ANDed with the elevation mask):
+
+    * ``pointing_ecef`` / ``cos_fov`` — sensor FOV cone in ECEF
+    * ``sun_ecef`` / ``cos_sza_max`` / ``cos_sza_min`` — solar zenith angle
     """
     r_ecef  = eci_to_ecef(r_eci, t_arr)                               # (T, 3)
     los     = r_ecef[:, np.newaxis, :] - gs_ecef[np.newaxis, :, :]   # (T, M, 3)
@@ -80,6 +140,14 @@ def _visibility(r_eci:          npt.NDArray,         # (T, 3)
         # dot(sat→ground, pointing) = dot(-los_hat, pointing_ecef)
         fov_cos = np.einsum('tmi,ti->tm', -los_hat, pointing_ecef)    # (T, M)
         vis    &= fov_cos >= cos_fov
+
+    if sun_ecef is not None:
+        # cos(SZA) = dot(sun_ecef, up); cos decreasing so ≤ SZA ↔ ≥ cos
+        cos_sza = np.einsum('ti,mi->tm', sun_ecef, up)                # (T, M)
+        if cos_sza_max is not None:
+            vis &= cos_sza >= cos_sza_max
+        if cos_sza_min is not None:
+            vis &= cos_sza <= cos_sza_min
 
     return vis
 
@@ -323,6 +391,8 @@ def coverage_fraction(
         batch_size:        int = 1_000,
         fov_pointing_lvlh: npt.NDArray | None = None,
         fov_half_angle:    float | None = None,
+        sza_max:           float | None = None,
+        sza_min:           float | None = None,
 ) -> dict:
     """Compute instantaneous and cumulative coverage fraction over a time window.
 
@@ -364,17 +434,8 @@ def coverage_fraction(
 
         ``final_cumulative`` : float — fraction of points covered ≥ once.
     """
-    # --- FOV validation & setup --------------------------------------------------
-    _fov_given = (fov_pointing_lvlh is not None, fov_half_angle is not None)
-    if any(_fov_given) and not all(_fov_given):
-        raise ValueError("fov_pointing_lvlh and fov_half_angle must both be "
-                         "provided together")
-    use_fov = all(_fov_given)
-    if use_fov:
-        pointing_lvlh_norm = (np.asarray(fov_pointing_lvlh, dtype=np.float64)
-                              / np.linalg.norm(fov_pointing_lvlh))
-        cos_fov = float(np.cos(fov_half_angle))
-    # --------------------------------------------------------------------------
+    use_fov, pointing_lvlh_norm, cos_fov, use_sza, cos_sza_max_, cos_sza_min_ = \
+        _parse_constraints(fov_pointing_lvlh, fov_half_angle, sza_max, sza_min)
 
     lat = np.asarray(lat, dtype=np.float64)
     lon = np.asarray(lon, dtype=np.float64)
@@ -405,13 +466,10 @@ def coverage_fraction(
     for b0 in range(0, N, batch_size):
         b1      = min(b0 + batch_size, N)
         t_batch = t_out[b0:b1]
-        r, v    = propagate_analytical(t_batch, **keplerian_params,
-                                       type=propagator_type)
-        pt_ecef = (_pointing_ecef(pointing_lvlh_norm, r, v, t_batch)
-                   if use_fov else None)
-        vis     = _visibility(r, t_batch, gs_ecef, up, sin_el_min,
-                              pointing_ecef=pt_ecef,
-                              cos_fov=cos_fov if use_fov else None)  # (T, M)
+        vis     = _compute_vis_batch(t_batch, keplerian_params, propagator_type,
+                                     gs_ecef, up, sin_el_min,
+                                     use_fov, pointing_lvlh_norm, cos_fov,
+                                     use_sza, cos_sza_max_, cos_sza_min_)  # (T, M)
 
         frac_out[b0:b1] = vis.mean(axis=1)
 
@@ -444,6 +502,8 @@ def revisit_time(
         batch_size:        int = 1_000,
         fov_pointing_lvlh: npt.NDArray | None = None,
         fov_half_angle:    float | None = None,
+        sza_max:           float | None = None,
+        sza_min:           float | None = None,
 ) -> dict:
     """Compute per-point revisit time statistics over a time window.
 
@@ -489,17 +549,8 @@ def revisit_time(
 
         ``global_mean`` : float — mean of per-point mean revisit times (s).
     """
-    # --- FOV validation & setup --------------------------------------------------
-    _fov_given = (fov_pointing_lvlh is not None, fov_half_angle is not None)
-    if any(_fov_given) and not all(_fov_given):
-        raise ValueError("fov_pointing_lvlh and fov_half_angle must both be "
-                         "provided together")
-    use_fov = all(_fov_given)
-    if use_fov:
-        pointing_lvlh_norm = (np.asarray(fov_pointing_lvlh, dtype=np.float64)
-                              / np.linalg.norm(fov_pointing_lvlh))
-        cos_fov = float(np.cos(fov_half_angle))
-    # --------------------------------------------------------------------------
+    use_fov, pointing_lvlh_norm, cos_fov, use_sza, cos_sza_max_, cos_sza_min_ = \
+        _parse_constraints(fov_pointing_lvlh, fov_half_angle, sza_max, sza_min)
 
     lat = np.asarray(lat, dtype=np.float64)
     lon = np.asarray(lon, dtype=np.float64)
@@ -531,13 +582,10 @@ def revisit_time(
         b1      = min(b0 + batch_size, N)
         b_offs  = offs[b0:b1]                          # (T,) µs offsets
         t_batch = t_out[b0:b1]
-        r, v    = propagate_analytical(t_batch, **keplerian_params,
-                                       type=propagator_type)
-        pt_ecef = (_pointing_ecef(pointing_lvlh_norm, r, v, t_batch)
-                   if use_fov else None)
-        vis     = _visibility(r, t_batch, gs_ecef, up, sin_el_min,
-                              pointing_ecef=pt_ecef,
-                              cos_fov=cos_fov if use_fov else None)  # (T, M)
+        vis     = _compute_vis_batch(t_batch, keplerian_params, propagator_type,
+                                     gs_ecef, up, sin_el_min,
+                                     use_fov, pointing_lvlh_norm, cos_fov,
+                                     use_sza, cos_sza_max_, cos_sza_min_)  # (T, M)
 
         # Detect transitions: prepend last-known state as row 0
         augmented = np.vstack([in_access[np.newaxis, :],
@@ -585,3 +633,298 @@ def revisit_time(
         'global_max':   float(np.nanmax(max_rev))  if has_gaps.any() else float('nan'),
         'global_mean':  float(np.nanmean(mean_rev)) if has_gaps.any() else float('nan'),
     }
+
+
+def pointwise_coverage(
+        lat:               npt.NDArray[np.floating],
+        lon:               npt.NDArray[np.floating],
+        keplerian_params:  dict,
+        t_start:           np.datetime64,
+        t_end:             np.datetime64,
+        alt:               float | np.floating = 0.0,
+        el_min:            float | np.floating = 0.0,
+        propagator_type:   str = 'twobody',
+        max_step:          np.timedelta64 = np.timedelta64(30, 's'),
+        batch_size:        int = 1_000,
+        fov_pointing_lvlh: npt.NDArray | None = None,
+        fov_half_angle:    float | None = None,
+        sza_max:           float | None = None,
+        sza_min:           float | None = None,
+) -> dict:
+    """Return the raw (N × M) visibility matrix for every timestep and ground point.
+
+    Unlike :func:`coverage_fraction` and :func:`revisit_time`, which reduce
+    the visibility matrix to summary statistics, this function returns the
+    full boolean matrix so callers can apply their own post-processing.
+
+    Parameters
+    ----------
+    lat, lon : npt.NDArray[np.floating]
+        Ground-point latitudes/longitudes (rad), shape ``(M,)``.
+    keplerian_params : dict
+        Orbital elements dict.
+    t_start, t_end : np.datetime64
+        Analysis window (``datetime64[us]``).
+    alt : float | np.floating, optional
+        Ground-point altitude above WGS84 (m).  Defaults to 0.
+    el_min : float | np.floating, optional
+        Minimum elevation angle (rad).  Defaults to 0 (horizon).
+    propagator_type : str, optional
+        ``'twobody'`` (default) or ``'j2'``.
+    max_step : np.timedelta64, optional
+        Scan time step.  Defaults to 30 s.
+    batch_size : int, optional
+        Time steps per propagation batch.  Defaults to 1 000.
+    fov_pointing_lvlh : npt.NDArray | None, optional
+        Sensor pointing direction in LVLH frame.  Must be paired with
+        ``fov_half_angle``.
+    fov_half_angle : float | None, optional
+        FOV half-angle (rad).  Must be paired with ``fov_pointing_lvlh``.
+    sza_max : float | None, optional
+        Maximum solar zenith angle (rad).  Points where the SZA exceeds this
+        value are considered invisible (daytime constraint).
+    sza_min : float | None, optional
+        Minimum solar zenith angle (rad).  Points where the SZA is below this
+        value are considered invisible (nighttime constraint).
+
+    Returns
+    -------
+    dict
+        ``t`` : ``(N,)`` ``datetime64[us]`` — sample timestamps.
+
+        ``lat`` : ``(M,)`` float — ground-point latitudes (rad), echoed from input.
+
+        ``lon`` : ``(M,)`` float — ground-point longitudes (rad), echoed from input.
+
+        ``alt`` : float — ground-point altitude (m), echoed from input.
+
+        ``visible`` : ``(N, M)`` bool — ``True`` where the satellite has
+        line-of-sight to the ground point at that timestep.
+
+    Notes
+    -----
+    Memory usage scales as ``N × M`` booleans.  For a 30-day window at a
+    20 s step (N ≈ 130 000) with M = 5 000 points this is roughly 650 MB.
+    Prefer :func:`coverage_fraction` or :func:`revisit_time` for summary
+    statistics over large grids.
+    """
+    use_fov, pointing_lvlh_norm, cos_fov, use_sza, cos_sza_max_, cos_sza_min_ = \
+        _parse_constraints(fov_pointing_lvlh, fov_half_angle, sza_max, sza_min)
+
+    lat = np.asarray(lat, dtype=np.float64)
+    lon = np.asarray(lon, dtype=np.float64)
+    M   = len(lat)
+    if M == 0:
+        raise ValueError("lat/lon arrays must not be empty")
+
+    gs_ecef, up = _build_gs(lat, lon, alt)
+    sin_el_min  = float(np.sin(el_min))
+
+    offs, t_start_us = _make_offsets(t_start, t_end, max_step)
+    N = len(offs)
+    t_out = t_start_us + offs.astype('timedelta64[us]')   # (N,)
+
+    if N == 0:
+        return {
+            't':       np.array([], dtype='datetime64[us]'),
+            'lat':     lat,
+            'lon':     lon,
+            'alt':     float(alt),
+            'visible': np.empty((0, M), dtype=np.bool_),
+        }
+
+    visible = np.empty((N, M), dtype=np.bool_)
+
+    for b0 in range(0, N, batch_size):
+        b1      = min(b0 + batch_size, N)
+        t_batch = t_out[b0:b1]
+        visible[b0:b1] = _compute_vis_batch(
+            t_batch, keplerian_params, propagator_type,
+            gs_ecef, up, sin_el_min,
+            use_fov, pointing_lvlh_norm, cos_fov,
+            use_sza, cos_sza_max_, cos_sza_min_,
+        )
+
+    return {
+        't':       t_out,
+        'lat':     lat,
+        'lon':     lon,
+        'alt':     float(alt),
+        'visible': visible,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Shapefile helpers
+# ---------------------------------------------------------------------------
+
+#: ESRI shapetype codes for polygon variants (Polygon, PolygonZ, PolygonM)
+_SHP_POLYGON_TYPES = frozenset({5, 15, 25})
+
+
+def _load_shapefile(path, feature_index):
+    """Read an ESRI Shapefile and return a shapely geometry.
+
+    Returns
+    -------
+    geom : shapely geometry
+        Union of all selected features (Polygon or MultiPolygon).
+        Rings are *unwrapped* so antimeridian-crossing polygons have
+        continuous (possibly out-of-[-180,180]) coordinates.
+    crosses_am : bool
+        True if any ring required longitude unwrapping, indicating that
+        the geometry may extend outside the [-180, 180] longitude range
+        and requires shifted-point PIP tests.
+    """
+    import shapefile as _pyshp
+    from shapely.geometry import Polygon as _Polygon
+    from shapely.ops import unary_union as _unary_union
+
+    sf = _pyshp.Reader(str(path))
+
+    if feature_index is not None:
+        raw_shapes = [sf.shape(feature_index)]
+    else:
+        raw_shapes = sf.shapes()
+
+    crosses_am = False
+    geoms = []
+
+    for shp in raw_shapes:
+        if shp.shapeType not in _SHP_POLYGON_TYPES:
+            continue
+
+        # Split the flat point list into per-part rings using the parts offsets
+        part_starts = list(shp.parts) + [len(shp.points)]
+        rings_raw = [
+            shp.points[part_starts[k]: part_starts[k + 1]]
+            for k in range(len(part_starts) - 1)
+        ]
+
+        # Unwrap each ring: remove antimeridian longitude jumps so the ring
+        # is represented as a continuous (but possibly extended) coordinate set.
+        unwrapped_rings = []
+        for ring in rings_raw:
+            lons_raw = [pt[0] for pt in ring]
+            lats     = [pt[1] for pt in ring]
+            lons_u   = [lons_raw[0]]
+            for j in range(1, len(lons_raw)):
+                dl = lons_raw[j] - lons_u[-1]
+                if dl > 180.0:
+                    lons_u.append(lons_raw[j] - 360.0)
+                    crosses_am = True
+                elif dl < -180.0:
+                    lons_u.append(lons_raw[j] + 360.0)
+                    crosses_am = True
+                else:
+                    lons_u.append(lons_raw[j])
+            unwrapped_rings.append(list(zip(lons_u, lats)))
+
+        if unwrapped_rings:
+            exterior = unwrapped_rings[0]
+            holes    = unwrapped_rings[1:]
+            geoms.append(_Polygon(exterior, holes))
+
+    if not geoms:
+        raise ValueError(
+            "No polygon features found in the shapefile.  "
+            "Only shapeTypes 5 (Polygon), 15 (PolygonZ), and 25 (PolygonM) "
+            "are supported."
+        )
+
+    geom = _unary_union(geoms) if len(geoms) > 1 else geoms[0]
+    return geom, crosses_am
+
+
+def sample_shapefile(
+        path: str,
+        *,
+        feature_index: int | None = None,
+        point_density: float = 1e11,
+) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
+    """Sample approximately equal-area points from an ESRI Shapefile polygon.
+
+    Reads the polygon geometry from a ``.shp`` file and returns a Fibonacci
+    lattice filtered to the interior, using the same density convention as
+    :func:`sample_region`.  Antimeridian-crossing polygons (e.g. Pacific
+    island groups, Russia) are handled correctly via coordinate unwrapping
+    and shifted-point PIP tests.
+
+    Parameters
+    ----------
+    path : str
+        Path to the ``.shp`` file.
+    feature_index : int or None, optional
+        Index of the feature/shape to sample from.  ``None`` (default)
+        unions all features in the layer.
+    point_density : float, optional
+        Approximate area represented by each sample point (m²).
+        Defaults to 1×10¹¹ m² (~100 000 km² per point).
+
+    Returns
+    -------
+    lat : npt.NDArray[np.floating]
+        Sample latitudes (rad), shape ``(M,)``.
+    lon : npt.NDArray[np.floating]
+        Sample longitudes (rad), shape ``(M,)``.
+
+    Raises
+    ------
+    ValueError
+        If the file contains no polygon features, or if no lattice points
+        land inside the geometry (degenerate or very small region).
+
+    Notes
+    -----
+    Requires ``pyshp`` and ``shapely`` (both declared as package
+    dependencies).
+    """
+    import shapely as _shapely
+
+    if point_density <= 0:
+        raise ValueError(f"point_density must be positive, got {point_density}")
+
+    geom, crosses_am = _load_shapefile(path, feature_index)
+
+    # Area estimate from bounding box (spherical zone formula)
+    minx, miny, maxx, maxy = geom.bounds   # degrees
+    lat_lo = max(np.radians(miny), -np.pi / 2.0)
+    lat_hi = min(np.radians(maxy),  np.pi / 2.0)
+    lon_span_rad = np.radians(min(abs(maxx - minx), 360.0))
+    area_approx = (4.0 * np.pi * EARTH_MEAN_RADIUS**2
+                   * (np.sin(lat_hi) - np.sin(lat_lo)) / 2.0
+                   * lon_span_rad / (2.0 * np.pi))
+
+    n = max(1, int(np.round(area_approx / point_density)))
+
+    # Oversample globally and filter via PIP
+    area_frac  = max(area_approx / (4.0 * np.pi * EARTH_MEAN_RADIUS**2), 1e-9)
+    n_global   = max(n * 5, int(np.ceil(n / area_frac * 1.3)))
+    lat_r, lon_r = _fibonacci_sphere(n_global)
+
+    # Shapely expects degrees (lon, lat) = (x, y)
+    lon_deg = np.degrees(lon_r)
+    lat_deg = np.degrees(lat_r)
+
+    inside = _shapely.contains_xy(geom, lon_deg, lat_deg)
+    if crosses_am:
+        # Also test points shifted by ±360° to reach the unwrapped polygon
+        inside |= _shapely.contains_xy(geom, lon_deg + 360.0, lat_deg)
+        inside |= _shapely.contains_xy(geom, lon_deg - 360.0, lat_deg)
+
+    lat_in = lat_r[inside]
+    lon_in = lon_r[inside]
+
+    if len(lat_in) == 0:
+        raise ValueError(
+            "No sample points fell inside the shapefile geometry — "
+            "check that the file contains valid polygon features and that "
+            "coordinates are in geographic degrees (WGS84 / EPSG:4326)."
+        )
+
+    if len(lat_in) > n:
+        idx    = np.round(np.linspace(0, len(lat_in) - 1, n)).astype(int)
+        lat_in = lat_in[idx]
+        lon_in = lon_in[idx]
+
+    return lat_in, lon_in

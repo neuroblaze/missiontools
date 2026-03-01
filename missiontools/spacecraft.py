@@ -1,0 +1,192 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+from .orbit.constants import EARTH_MU, EARTH_J2, EARTH_SEMI_MAJOR_AXIS
+from .orbit.propagation import propagate_analytical
+
+_VALID_PROPAGATORS = frozenset({'twobody', 'j2'})
+
+
+@dataclass
+class Spacecraft:
+    """A spacecraft defined by its Keplerian orbital elements and propagator.
+
+    All angles in radians; distances in metres; times as ``datetime64[us]``.
+
+    Parameters
+    ----------
+    a : float
+        Semi-major axis (m).
+    e : float
+        Eccentricity (dimensionless).
+    i : float
+        Inclination (rad).
+    raan : float
+        Right ascension of the ascending node (rad).
+    arg_p : float
+        Argument of perigee (rad).
+    ma : float
+        Mean anomaly at epoch (rad).
+    epoch : np.datetime64
+        Epoch at which the elements are defined.
+    propagator_type : str, optional
+        ``'twobody'`` (default) or ``'j2'``.
+    central_body_mu : float, optional
+        Gravitational parameter (m³ s⁻²).  Defaults to Earth.
+    central_body_j2 : float, optional
+        J2 perturbation coefficient (m⁵ s⁻²).  Defaults to Earth.
+    central_body_radius : float, optional
+        Equatorial radius (m).  Defaults to Earth WGS84.
+
+    Examples
+    --------
+    Construct directly::
+
+        import numpy as np
+        from missiontools import Spacecraft
+
+        sc = Spacecraft(
+            a=6_771_000.0,
+            e=0.0006,
+            i=np.radians(51.6),
+            raan=np.radians(120.0),
+            arg_p=np.radians(30.0),
+            ma=0.0,
+            epoch=np.datetime64('2025-01-01T00:00:00', 'us'),
+            propagator_type='j2',
+        )
+
+    Construct from :func:`~missiontools.orbit.sun_synchronous_orbit`::
+
+        from missiontools import Spacecraft
+        from missiontools.orbit import sun_synchronous_orbit
+
+        params = sun_synchronous_orbit(altitude=550_000.0, local_time_at_node='10:30')
+        sc = Spacecraft.from_dict(params, propagator_type='j2')
+    """
+
+    a:                   float
+    e:                   float
+    i:                   float
+    raan:                float
+    arg_p:               float
+    ma:                  float
+    epoch:               np.datetime64
+    propagator_type:     str   = 'twobody'
+    central_body_mu:     float = EARTH_MU
+    central_body_j2:     float = EARTH_J2
+    central_body_radius: float = EARTH_SEMI_MAJOR_AXIS
+
+    def __post_init__(self):
+        if self.propagator_type not in _VALID_PROPAGATORS:
+            raise ValueError(
+                f"propagator_type must be one of {sorted(_VALID_PROPAGATORS)}, "
+                f"got {self.propagator_type!r}"
+            )
+        self.epoch = np.asarray(self.epoch, dtype='datetime64[us]').item()
+
+    @property
+    def keplerian_params(self) -> dict:
+        """Orbital elements as a dict, compatible with :func:`~missiontools.orbit.propagate_analytical`.
+
+        Use this to pass the spacecraft's orbit to the functional API::
+
+            r, v = propagate_analytical(t, **sc.keplerian_params)
+            coverage_fraction(lat, lon, sc.keplerian_params, t_start, t_end,
+                              propagator_type=sc.propagator_type)
+        """
+        return {
+            'epoch':               self.epoch,
+            'a':                   self.a,
+            'e':                   self.e,
+            'i':                   self.i,
+            'raan':                self.raan,
+            'arg_p':               self.arg_p,
+            'ma':                  self.ma,
+            'central_body_mu':     self.central_body_mu,
+            'central_body_j2':     self.central_body_j2,
+            'central_body_radius': self.central_body_radius,
+        }
+
+    @classmethod
+    def from_dict(cls, params: dict,
+                  propagator_type: str = 'twobody') -> Spacecraft:
+        """Construct from a ``keplerian_params`` dict.
+
+        Accepts dicts produced by :func:`~missiontools.orbit.sun_synchronous_orbit`
+        and similar helpers.  Optional central-body keys fall back to Earth
+        defaults if absent.
+
+        Parameters
+        ----------
+        params : dict
+            Must contain ``'a'``, ``'e'``, ``'i'``, ``'raan'``, ``'arg_p'``,
+            ``'ma'``, ``'epoch'``.  May optionally contain
+            ``'central_body_mu'``, ``'central_body_j2'``,
+            ``'central_body_radius'``.
+        propagator_type : str, optional
+            ``'twobody'`` (default) or ``'j2'``.
+        """
+        return cls(
+            a                   = params['a'],
+            e                   = params['e'],
+            i                   = params['i'],
+            raan                = params['raan'],
+            arg_p               = params['arg_p'],
+            ma                  = params['ma'],
+            epoch               = params['epoch'],
+            propagator_type     = propagator_type,
+            central_body_mu     = params.get('central_body_mu',     EARTH_MU),
+            central_body_j2     = params.get('central_body_j2',     EARTH_J2),
+            central_body_radius = params.get('central_body_radius', EARTH_SEMI_MAJOR_AXIS),
+        )
+
+    def propagate(
+            self,
+            t_start: np.datetime64,
+            t_end:   np.datetime64,
+            step:    np.timedelta64,
+    ) -> dict:
+        """Propagate the orbit and return ECI state vectors.
+
+        Parameters
+        ----------
+        t_start : np.datetime64
+            Start of the propagation window.
+        t_end : np.datetime64
+            End of the propagation window (inclusive).
+        step : np.timedelta64
+            Time step between samples.
+
+        Returns
+        -------
+        dict
+            ``t`` : ``(N,)`` ``datetime64[us]`` — sample timestamps.
+
+            ``r`` : ``(N, 3)`` float — ECI position vectors (m).
+
+            ``v`` : ``(N, 3)`` float — ECI velocity vectors (m s⁻¹).
+        """
+        t_start  = np.asarray(t_start, dtype='datetime64[us]')
+        t_end    = np.asarray(t_end,   dtype='datetime64[us]')
+        total_us = int((t_end - t_start) / np.timedelta64(1, 'us'))
+        step_us  = int(step / np.timedelta64(1, 'us'))
+
+        if total_us <= 0 or step_us <= 0:
+            return {
+                't': np.array([], dtype='datetime64[us]'),
+                'r': np.empty((0, 3), dtype=np.float64),
+                'v': np.empty((0, 3), dtype=np.float64),
+            }
+
+        offs = np.arange(0, total_us + 1, step_us, dtype=np.int64)
+        if offs[-1] != total_us:
+            offs = np.append(offs, np.int64(total_us))
+
+        t    = t_start + offs.astype('timedelta64[us]')
+        r, v = propagate_analytical(t, **self.keplerian_params,
+                                    type=self.propagator_type)
+        return {'t': t, 'r': r, 'v': v}
