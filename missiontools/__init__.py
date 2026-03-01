@@ -24,3 +24,4 @@ __version__ = "0.1.0"
 
 from .spacecraft import Spacecraft
 from .attitude import AttitudeLaw
+from .ground_station import GroundStation

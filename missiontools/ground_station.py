@@ -1,0 +1,94 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+from .orbit.access import earth_access_intervals
+
+
+@dataclass
+class GroundStation:
+    """A ground station defined in WGS84 geodetic coordinates.
+
+    Parameters
+    ----------
+    lat : float
+        Geodetic latitude (deg), range [-90, 90].
+    lon : float
+        Longitude (deg).  Any value is accepted; cos/sin periodicity means
+        values outside [-180, 180] are equivalent to their wrapped form.
+    alt : float, optional
+        Altitude above the WGS84 ellipsoid (m).  Defaults to 0 (mean
+        sea level approximation).
+
+    Examples
+    --------
+    Create a ground station and compute access against a spacecraft::
+
+        import numpy as np
+        from missiontools import GroundStation, Spacecraft
+
+        gs = GroundStation(lat=51.5, lon=-0.1)           # London
+        sc = Spacecraft(a=6_771_000, e=0, i=np.radians(51.6), ...)
+
+        passes = gs.access(sc,
+                           t_start = np.datetime64('2025-01-01', 'us'),
+                           t_end   = np.datetime64('2025-01-03', 'us'),
+                           el_min  = 5.0)
+    """
+
+    lat: float
+    lon: float
+    alt: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not -90.0 <= self.lat <= 90.0:
+            raise ValueError(
+                f"lat must be in [-90, 90] degrees, got {self.lat}"
+            )
+
+    def access(
+            self,
+            spacecraft,
+            t_start:  np.datetime64,
+            t_end:    np.datetime64,
+            el_min:   float = 0.0,
+            step:     np.timedelta64 = np.timedelta64(30, 's'),
+    ) -> list[tuple[np.datetime64, np.datetime64]]:
+        """Compute access intervals between this ground station and a spacecraft.
+
+        Parameters
+        ----------
+        spacecraft : Spacecraft
+            The spacecraft whose orbit is to be checked.
+        t_start : np.datetime64
+            Start of the search window.
+        t_end : np.datetime64
+            End of the search window.
+        el_min : float, optional
+            Minimum elevation angle (deg).  Contacts below this elevation
+            are not reported.  Default 0.
+        step : np.timedelta64, optional
+            Coarse scan time step used internally.  Smaller values improve
+            detection of very short passes at the cost of runtime.
+            Default 30 s.
+
+        Returns
+        -------
+        list of tuple[np.datetime64, np.datetime64]
+            Each tuple ``(start, end)`` is a continuous access window where
+            the spacecraft is visible above ``el_min``.  Both timestamps are
+            ``datetime64[us]``.  Returns an empty list if no access occurs.
+        """
+        return earth_access_intervals(
+            t_start          = t_start,
+            t_end            = t_end,
+            keplerian_params = spacecraft.keplerian_params,
+            lat              = np.radians(self.lat),
+            lon              = np.radians(self.lon),
+            alt              = self.alt,
+            el_min           = np.radians(el_min),
+            propagator_type  = spacecraft.propagator_type,
+            max_step         = step,
+        )

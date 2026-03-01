@@ -1,7 +1,10 @@
 import numpy as np
 import pytest
 
-from missiontools.orbit.access import earth_access, earth_access_intervals
+from missiontools.orbit.access import (earth_access, earth_access_intervals,
+                                       space_to_space_access,
+                                       space_to_space_access_intervals)
+from missiontools.orbit.constants import EARTH_MEAN_RADIUS
 from missiontools.orbit.frames import geodetic_to_ecef, eci_to_ecef
 
 # Ground station: London Heathrow (approx)
@@ -344,3 +347,154 @@ def test_intervals_empty_window():
     assert earth_access_intervals(
         _T_START, _T_START, _ISS_PARAMS, _LAT, _LON
     ) == []
+
+
+# ===========================================================================
+# space_to_space_access
+# ===========================================================================
+
+# Two ISS-like spacecraft: same orbital elements but SC2 leads by 10° mean anomaly.
+# At t=0 they are separated by ~10° arc along the same orbit → same side of Earth.
+_SC1 = _ISS_PARAMS
+_SC2 = {**_ISS_PARAMS, 'ma': np.radians(10.0)}   # 10° ahead of SC1
+
+# SC3: exactly opposite side — raan offset 180° (for a simpler geometry test)
+_SC3 = {**_ISS_PARAMS, 'ma': np.radians(180.0)}   # opposite side, same orbit
+
+
+def _state_at_epoch(params):
+    """Propagate a single point at the epoch and return (r, v)."""
+    from missiontools.orbit.propagation import propagate_analytical
+    t = np.array([params['epoch']])
+    r, v = propagate_analytical(t, **params, type='twobody')
+    return r, v
+
+
+class TestSpaceToSpaceAccess:
+
+    def test_same_side_clear(self):
+        """Two sats separated by 10° on same orbit → clear LOS."""
+        r1, _ = _state_at_epoch(_SC1)
+        r2, _ = _state_at_epoch(_SC2)
+        result = space_to_space_access(r1, r2)
+        assert result.shape == (1,)
+        assert bool(result[0]) is True
+
+    def test_opposite_side_blocked(self):
+        """Satellite directly on the opposite side → LOS through Earth."""
+        r1, _ = _state_at_epoch(_SC1)
+        r3, _ = _state_at_epoch(_SC3)
+        result = space_to_space_access(r1, r3)
+        assert bool(result[0]) is False
+
+    def test_body_radius_zero_always_visible(self):
+        """body_radius=0 means no central body → always True."""
+        r1, _ = _state_at_epoch(_SC1)
+        r3, _ = _state_at_epoch(_SC3)
+        assert bool(space_to_space_access(r1, r3, body_radius=0.0)[0]) is True
+
+    def test_large_body_radius_always_blocked(self):
+        """body_radius larger than orbital distance → always False."""
+        r1, _ = _state_at_epoch(_SC1)
+        r2, _ = _state_at_epoch(_SC2)
+        result = space_to_space_access(r1, r2, body_radius=1e9)
+        assert bool(result[0]) is False
+
+    def test_scalar_input_returns_python_bool(self):
+        """(3,) inputs should return a Python bool, not an array."""
+        r1, _ = _state_at_epoch(_SC1)
+        r2, _ = _state_at_epoch(_SC2)
+        result = space_to_space_access(r1[0], r2[0])
+        assert isinstance(result, bool)
+
+    def test_array_input_shape(self):
+        """(N, 3) inputs should return shape (N,) bool array."""
+        from missiontools.orbit.propagation import propagate_analytical
+        t = _T_START + np.arange(5) * np.timedelta64(60, 's')
+        r1, _ = propagate_analytical(t, **_SC1, type='twobody')
+        r2, _ = propagate_analytical(t, **_SC2, type='twobody')
+        result = space_to_space_access(r1, r2)
+        assert result.shape == (5,)
+        assert result.dtype == np.bool_
+
+    def test_collocated_satellites_visible(self):
+        """Coincident positions (d=0) must not raise and must return True."""
+        r1, _ = _state_at_epoch(_SC1)
+        result = space_to_space_access(r1, r1)
+        assert bool(result[0]) is True
+
+    def test_symmetric(self):
+        """s2s(r1, r2) == s2s(r2, r1) for all timesteps."""
+        from missiontools.orbit.propagation import propagate_analytical
+        t = _T_START + np.arange(10) * np.timedelta64(300, 's')
+        r1, _ = propagate_analytical(t, **_SC1, type='twobody')
+        r2, _ = propagate_analytical(t, **_SC2, type='twobody')
+        np.testing.assert_array_equal(space_to_space_access(r1, r2),
+                                      space_to_space_access(r2, r1))
+
+
+# ===========================================================================
+# space_to_space_access_intervals
+# ===========================================================================
+
+# Second spacecraft at 60° RAAN offset.  At i=51.6°, 400 km LEO, the angular
+# separation between the two satellites oscillates between ~36° (near the
+# inclination peaks → in LOS) and 60° (near equatorial crossings → blocked),
+# giving several access windows per orbit.
+_SC4 = {**_ISS_PARAMS, 'raan': np.radians(60.0)}   # 60° less than SC1's 120°
+
+
+class TestSpaceToSpaceAccessIntervals:
+
+    def test_returns_list(self):
+        result = space_to_space_access_intervals(
+            _T_START, _T_END, _SC1, _SC4)
+        assert isinstance(result, list)
+
+    def test_intervals_are_datetime64_tuples(self):
+        result = space_to_space_access_intervals(
+            _T_START, _T_END, _SC1, _SC4)
+        assert len(result) > 0
+        for start, end in result:
+            assert start.dtype == np.dtype('datetime64[us]')
+            assert end.dtype   == np.dtype('datetime64[us]')
+            assert start < end
+
+    def test_at_least_one_access_window(self):
+        """Two LEO sats at different RAANs → at least one LOS window per day."""
+        result = space_to_space_access_intervals(
+            _T_START, _T_END, _SC1, _SC4)
+        assert len(result) >= 1
+
+    def test_all_blocked_with_large_body_radius(self):
+        """body_radius larger than orbit → no LOS at all."""
+        result = space_to_space_access_intervals(
+            _T_START, _T_END, _SC1, _SC4, body_radius=1e9)
+        assert result == []
+
+    def test_empty_window(self):
+        """t_start == t_end must return an empty list."""
+        result = space_to_space_access_intervals(
+            _T_START, _T_START, _SC1, _SC4)
+        assert result == []
+
+    def test_symmetric_intervals(self):
+        """Swapping the two spacecraft gives the same access windows."""
+        r12 = space_to_space_access_intervals(_T_START, _T_END, _SC1, _SC4)
+        r21 = space_to_space_access_intervals(_T_START, _T_END, _SC4, _SC1)
+        assert len(r12) == len(r21)
+        for (s1, e1), (s2, e2) in zip(r12, r21):
+            assert s1 == s2
+            assert e1 == e2
+
+    def test_custom_step(self):
+        result = space_to_space_access_intervals(
+            _T_START, _T_END, _SC1, _SC4,
+            max_step=np.timedelta64(60, 's'))
+        assert isinstance(result, list)
+
+    def test_j2_propagator(self):
+        result = space_to_space_access_intervals(
+            _T_START, _T_END, _SC1, _SC4, propagator_type='j2')
+        assert isinstance(result, list)
+        assert len(result) >= 1
