@@ -7,6 +7,7 @@ import numpy as np
 from .orbit.constants import EARTH_MU, EARTH_J2, EARTH_SEMI_MAJOR_AXIS
 from .orbit.propagation import (propagate_analytical, sun_synchronous_orbit,
                                  geostationary_orbit, highly_elliptical_orbit)
+from .attitude import AttitudeLaw
 
 _VALID_PROPAGATORS = frozenset({'twobody', 'j2'})
 
@@ -88,6 +89,52 @@ class Spacecraft:
                 f"got {self.propagator_type!r}"
             )
         self.epoch = np.asarray(self.epoch, dtype='datetime64[us]').item()
+        self._attitude_law: AttitudeLaw = AttitudeLaw.nadir()
+        self._sensors: list = []
+
+    @property
+    def attitude_law(self) -> AttitudeLaw:
+        """Pointing law for this spacecraft.  Defaults to nadir pointing."""
+        return self._attitude_law
+
+    @attitude_law.setter
+    def attitude_law(self, value: AttitudeLaw) -> None:
+        if not isinstance(value, AttitudeLaw):
+            raise TypeError(
+                f"attitude_law must be an AttitudeLaw instance, "
+                f"got {type(value).__name__!r}"
+            )
+        self._attitude_law = value
+
+    @property
+    def sensors(self) -> list:
+        """Sensors attached to this spacecraft (read-only copy)."""
+        return list(self._sensors)
+
+    def add_sensor(self, sensor) -> None:
+        """Attach a Sensor to this spacecraft.
+
+        Sets the sensor's back-reference to this spacecraft and appends it to
+        the internal sensors list.
+
+        Parameters
+        ----------
+        sensor : Sensor
+            The sensor to attach.
+
+        Raises
+        ------
+        TypeError
+            If ``sensor`` is not a :class:`~missiontools.Sensor` instance.
+        """
+        from .sensor import Sensor  # local import avoids circular dep
+        if not isinstance(sensor, Sensor):
+            raise TypeError(
+                f"sensor must be a Sensor instance, "
+                f"got {type(sensor).__name__!r}"
+            )
+        sensor._spacecraft = self
+        self._sensors.append(sensor)
 
     @property
     def keplerian_params(self) -> dict:

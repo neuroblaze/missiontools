@@ -67,6 +67,86 @@ def _q_from_vec(vec: npt.NDArray, roll: float = 0.0) -> npt.NDArray:
     return _q_compose(q_min, q_roll)
 
 
+def _q_rotate(q: npt.NDArray, v: npt.NDArray) -> npt.NDArray:
+    """Rotate 3D vector v by unit quaternion q  (R(q) @ v)."""
+    w, x, y, z = q
+    return np.array([
+        (1 - 2*(y*y + z*z))*v[0] + 2*(x*y - w*z)*v[1] + 2*(x*z + w*y)*v[2],
+            2*(x*y + w*z)*v[0] + (1 - 2*(x*x + z*z))*v[1] + 2*(y*z - w*x)*v[2],
+            2*(x*z - w*y)*v[0] +     2*(y*z + w*x)*v[1] + (1 - 2*(x*x + y*y))*v[2],
+    ])
+
+
+def _q_from_vec_batch(vecs: npt.NDArray, roll: float = 0.0) -> npt.NDArray:
+    """Vectorized :func:`_q_from_vec` over N directions.
+
+    Parameters
+    ----------
+    vecs : npt.NDArray, shape (N, 3)
+        Target boresight directions (must be unit vectors).
+    roll : float
+        Roll angle (rad) about each boresight axis.
+
+    Returns
+    -------
+    npt.NDArray, shape (N, 4)
+        Unit quaternions [w, x, y, z].
+    """
+    dot = vecs[:, 2]               # (N,)  cos θ  = v · ẑ
+
+    # axis = ẑ × v = [-v[1], v[0], 0];  half = [1 + cos θ, axis]
+    N    = len(vecs)
+    half = np.empty((N, 4), dtype=np.float64)
+    half[:, 0] =  1.0 + dot
+    half[:, 1] = -vecs[:, 1]
+    half[:, 2] =  vecs[:, 0]
+    half[:, 3] =  0.0
+
+    # 180° edge case: dot ≈ −1 → rotate about body-x
+    mask = dot < -0.9999
+    half[mask] = [0., 1., 0., 0.]
+
+    q_min = half / np.linalg.norm(half, axis=1, keepdims=True)
+
+    if roll == 0.0:
+        return q_min
+
+    # Compose q_min[n] ⊗ q_roll  where  q_roll = [cr, 0, 0, sr]
+    # Simplified Hamilton product with x2=y2=0:
+    cr, sr = np.cos(roll / 2), np.sin(roll / 2)
+    w, x, y, z = q_min[:, 0], q_min[:, 1], q_min[:, 2], q_min[:, 3]
+    return np.stack([
+        w*cr - z*sr,
+        x*cr + y*sr,
+        y*cr - x*sr,
+        w*sr + z*cr,
+    ], axis=1)
+
+
+def _q_rotate_batch(qs: npt.NDArray, v: npt.NDArray) -> npt.NDArray:
+    """Rotate a fixed 3-D vector by N quaternions.
+
+    Parameters
+    ----------
+    qs : npt.NDArray, shape (N, 4)
+        Unit quaternions [w, x, y, z].
+    v : npt.NDArray, shape (3,)
+        Vector to rotate.
+
+    Returns
+    -------
+    npt.NDArray, shape (N, 3)
+        Rotated vectors (not normalised).
+    """
+    w, x, y, z = qs[:, 0], qs[:, 1], qs[:, 2], qs[:, 3]
+    vx, vy, vz = v
+    return np.stack([
+        (1 - 2*(y*y + z*z))*vx + 2*(x*y - w*z)*vy + 2*(x*z + w*y)*vz,
+            2*(x*y + w*z)*vx + (1 - 2*(x*x + z*z))*vy + 2*(y*z - w*x)*vz,
+            2*(x*z - w*y)*vx +     2*(y*z + w*x)*vy + (1 - 2*(x*x + y*y))*vz,
+    ], axis=1)
+
+
 def _q_boresight(q: npt.NDArray) -> npt.NDArray:
     """Boresight direction (body-z rotated by quaternion q).
 
@@ -143,11 +223,13 @@ class AttitudeLaw:
     def __init__(self, mode: str, *,
                  q: npt.NDArray | None = None,
                  frame: str | None = None,
-                 target=None):
+                 target=None,
+                 roll: float = 0.0):
         self._mode   = mode    # 'fixed' | 'track'
         self._q      = q       # (4,) unit ndarray [w,x,y,z], or None
         self._frame  = frame   # 'lvlh' | 'eci' | 'ecef', or None
         self._target = target  # Spacecraft, or None
+        self._roll   = roll    # roll about boresight for 'track' mode
         # Pre-compute boresight direction in the reference frame for 'fixed'
         self._pointing_in_ref = _q_boresight(q) if q is not None else None
 
@@ -191,13 +273,20 @@ class AttitudeLaw:
         return cls('fixed', q=q, frame=frame)
 
     @classmethod
-    def track(cls, target) -> AttitudeLaw:
+    def track(cls, target, roll: float = 0.0) -> AttitudeLaw:
         """Target-tracking attitude law: boresight always points toward target.
 
         Parameters
         ----------
         target : Spacecraft
             The spacecraft to track.
+        roll : float, optional
+            Roll angle (rad) about the boresight axis.  Default 0 uses the
+            minimum-rotation convention from :func:`_q_from_vec` to pin the
+            remaining degree of freedom.  Note that ``roll=0`` does **not**
+            correspond to a physically meaningful reference orientation such
+            as orbit-normal or sun-pointing; it is purely a deterministic
+            convention that changes as the target moves.
 
         Raises
         ------
@@ -210,7 +299,7 @@ class AttitudeLaw:
                 f"target must be a Spacecraft instance, "
                 f"got {type(target).__name__!r}"
             )
-        return cls('track', target=target)
+        return cls('track', target=target, roll=roll)
 
     @classmethod
     def nadir(cls) -> AttitudeLaw:
@@ -303,4 +392,61 @@ class AttitudeLaw:
         t_arr = np.atleast_1d(np.asarray(t, dtype='datetime64[us]'))
         eci   = np.atleast_2d(self.pointing_eci(r_eci, v_eci, t))  # (N, 3)
         result = eci_to_ecef(eci, t_arr)
+        return result[0] if scalar else result
+
+    def rotate_from_body(self,
+                         v_body: npt.ArrayLike,
+                         r_eci:  npt.ArrayLike,
+                         v_eci:  npt.ArrayLike,
+                         t:      npt.ArrayLike,
+                         ) -> npt.NDArray[np.floating]:
+        """Express a spacecraft body-frame vector in the ECI frame.
+
+        Supported for both ``'fixed'`` and ``'track'`` modes.  For ``'track'``
+        mode the :attr:`roll` angle stored on the law (default 0) pins the
+        remaining degree of freedom using the minimum-rotation convention.
+
+        Parameters
+        ----------
+        v_body : array_like, shape (3,)
+            Unit direction in the spacecraft body frame (need not be
+            pre-normalised).
+        r_eci : array_like, shape ``(N, 3)`` or ``(3,)``
+            Host spacecraft ECI position(s) (m).
+        v_eci : array_like, shape ``(N, 3)`` or ``(3,)``
+            Host spacecraft ECI velocity(s) (m s⁻¹).
+        t : array_like of datetime64, shape ``(N,)`` or scalar
+            Observation epoch(s).
+
+        Returns
+        -------
+        npt.NDArray[np.floating]
+            Unit vector(s) in ECI, shape ``(N, 3)`` or ``(3,)``.
+        """
+        v   = np.asarray(v_body, dtype=np.float64)
+        v   = v / np.linalg.norm(v)
+        r   = np.asarray(r_eci, dtype=np.float64)
+        scalar = r.ndim == 1
+        r_2d  = np.atleast_2d(r)
+        v_2d  = np.atleast_2d(np.asarray(v_eci, dtype=np.float64))
+        t_arr = np.atleast_1d(np.asarray(t, dtype='datetime64[us]'))
+        N     = len(r_2d)
+
+        if self._mode == 'fixed':
+            v_ref = _q_rotate(self._q, v)                      # (3,) in ref frame
+            tiled = np.tile(v_ref, (N, 1))                     # (N, 3)
+            if   self._frame == 'eci':  vecs = tiled
+            elif self._frame == 'lvlh': vecs = lvlh_to_eci(tiled, r_2d, v_2d)
+            else:                       vecs = ecef_to_eci(tiled, t_arr)
+        else:  # 'track'
+            r_tgt, _ = propagate_analytical(
+                t_arr, **self._target.keplerian_params,
+                type=self._target.propagator_type,
+            )
+            d    = r_tgt - r_2d
+            d    = d / np.linalg.norm(d, axis=1, keepdims=True)  # (N, 3) unit
+            qs   = _q_from_vec_batch(d, roll=self._roll)          # (N, 4)
+            vecs = _q_rotate_batch(qs, v)                         # (N, 3)
+
+        result = vecs / np.linalg.norm(vecs, axis=1, keepdims=True)
         return result[0] if scalar else result

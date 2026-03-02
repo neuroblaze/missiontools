@@ -354,3 +354,49 @@ class TestHEO:
         assert sc.a    == params['a']
         assert sc.raan == params['raan']
         assert sc.ma   == params['ma']
+
+
+# ===========================================================================
+# AttitudeLaw integration
+# ===========================================================================
+
+class TestAttitudeLaw:
+
+    def _sc(self):
+        return Spacecraft(**_KW)
+
+    def test_default_is_attitude_law_instance(self):
+        from missiontools import AttitudeLaw
+        assert isinstance(self._sc().attitude_law, AttitudeLaw)
+
+    def test_default_is_nadir(self):
+        """Default law must be nadir (body-z = −R̂ in LVLH)."""
+        from missiontools import AttitudeLaw
+        nadir = AttitudeLaw.nadir()
+        sc = self._sc()
+        # Both are nadir; check their pre-computed boresight vectors match.
+        np.testing.assert_array_equal(
+            sc.attitude_law._pointing_in_ref,
+            nadir._pointing_in_ref,
+        )
+
+    def test_can_set_attitude_law(self):
+        from missiontools import AttitudeLaw
+        sc = self._sc()
+        new_law = AttitudeLaw.fixed([0, 0, 1], 'eci')
+        sc.attitude_law = new_law
+        assert sc.attitude_law is new_law
+
+    def test_set_invalid_type_raises(self):
+        sc = self._sc()
+        with pytest.raises(TypeError, match='AttitudeLaw'):
+            sc.attitude_law = 'nadir'
+
+    def test_nadir_boresight_points_toward_earth(self):
+        """Nadir law boresight in LVLH must be −R̂ = (−1, 0, 0)."""
+        sc = self._sc()
+        state = sc.propagate(_EPOCH, _EPOCH + np.timedelta64(60, 's'),
+                             np.timedelta64(60, 's'))
+        r, v, t = state['r'][0], state['v'][0], state['t'][0]
+        boresight = sc.attitude_law.pointing_lvlh(r, v, t)
+        np.testing.assert_allclose(boresight, [-1., 0., 0.], atol=1e-12)

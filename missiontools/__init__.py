@@ -26,3 +26,4 @@ from .spacecraft import Spacecraft
 from .attitude import AttitudeLaw
 from .ground_station import GroundStation
 from .aoi import AoI
+from .sensor import Sensor
