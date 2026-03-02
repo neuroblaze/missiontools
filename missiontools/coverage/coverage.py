@@ -773,6 +773,29 @@ def pointwise_coverage(
 _SHP_POLYGON_TYPES = frozenset({5, 15, 25})
 
 
+def _unwrap_ring(coords: list) -> tuple[list, bool]:
+    """Unwrap longitude jumps > 180° in a coordinate ring.
+
+    Returns the unwrapped coordinate list and whether any unwrapping occurred
+    (i.e. the ring crosses the antimeridian).
+    """
+    lons_raw = [c[0] for c in coords]
+    lats     = [c[1] for c in coords]
+    lons_u   = [lons_raw[0]]
+    crosses  = False
+    for j in range(1, len(lons_raw)):
+        dl = lons_raw[j] - lons_u[-1]
+        if dl > 180.0:
+            lons_u.append(lons_raw[j] - 360.0)
+            crosses = True
+        elif dl < -180.0:
+            lons_u.append(lons_raw[j] + 360.0)
+            crosses = True
+        else:
+            lons_u.append(lons_raw[j])
+    return list(zip(lons_u, lats)), crosses
+
+
 def _load_shapefile(path, feature_index):
     """Read an ESRI Shapefile and return a shapely geometry.
 
@@ -788,7 +811,8 @@ def _load_shapefile(path, feature_index):
         and requires shifted-point PIP tests.
     """
     import shapefile as _pyshp
-    from shapely.geometry import Polygon as _Polygon
+    from shapely.geometry import shape as _shape, Polygon as _Polygon
+    from shapely.geometry import MultiPolygon as _MultiPolygon
     from shapely.ops import unary_union as _unary_union
 
     sf = _pyshp.Reader(str(path))
@@ -805,36 +829,25 @@ def _load_shapefile(path, feature_index):
         if shp.shapeType not in _SHP_POLYGON_TYPES:
             continue
 
-        # Split the flat point list into per-part rings using the parts offsets
-        part_starts = list(shp.parts) + [len(shp.points)]
-        rings_raw = [
-            shp.points[part_starts[k]: part_starts[k + 1]]
-            for k in range(len(part_starts) - 1)
-        ]
+        # Use pyshp's __geo_interface__ to obtain correct GeoJSON topology.
+        # This handles the ESRI multipart polygon convention (multiple exterior
+        # rings within a single feature) correctly, unlike a naive "first ring
+        # is exterior, rest are holes" approach.
+        geo = _shape(shp.__geo_interface__)
+        polys = list(geo.geoms) if isinstance(geo, _MultiPolygon) else [geo]
 
-        # Unwrap each ring: remove antimeridian longitude jumps so the ring
-        # is represented as a continuous (but possibly extended) coordinate set.
-        unwrapped_rings = []
-        for ring in rings_raw:
-            lons_raw = [pt[0] for pt in ring]
-            lats     = [pt[1] for pt in ring]
-            lons_u   = [lons_raw[0]]
-            for j in range(1, len(lons_raw)):
-                dl = lons_raw[j] - lons_u[-1]
-                if dl > 180.0:
-                    lons_u.append(lons_raw[j] - 360.0)
-                    crosses_am = True
-                elif dl < -180.0:
-                    lons_u.append(lons_raw[j] + 360.0)
-                    crosses_am = True
-                else:
-                    lons_u.append(lons_raw[j])
-            unwrapped_rings.append(list(zip(lons_u, lats)))
+        for poly in polys:
+            # Unwrap each ring for antimeridian-crossing polygons.
+            ext_coords, cam = _unwrap_ring(list(poly.exterior.coords))
+            crosses_am = crosses_am or cam
 
-        if unwrapped_rings:
-            exterior = unwrapped_rings[0]
-            holes    = unwrapped_rings[1:]
-            geoms.append(_Polygon(exterior, holes))
+            int_coords_list = []
+            for interior in poly.interiors:
+                ic, cam = _unwrap_ring(list(interior.coords))
+                crosses_am = crosses_am or cam
+                int_coords_list.append(ic)
+
+            geoms.append(_Polygon(ext_coords, int_coords_list))
 
     if not geoms:
         raise ValueError(
@@ -871,20 +884,16 @@ def _sample_from_geom(
     """
     import shapely as _shapely
 
-    # Area estimate from bounding box (spherical zone formula)
-    minx, miny, maxx, maxy = geom.bounds   # degrees
-    lat_lo = max(np.radians(miny), -np.pi / 2.0)
-    lat_hi = min(np.radians(maxy),  np.pi / 2.0)
-    lon_span_rad = np.radians(min(abs(maxx - minx), 360.0))
-    area_approx = (4.0 * np.pi * EARTH_MEAN_RADIUS**2
-                   * (np.sin(lat_hi) - np.sin(lat_lo)) / 2.0
-                   * lon_span_rad / (2.0 * np.pi))
-
-    n = max(1, int(np.round(area_approx / point_density)))
-
-    # Oversample globally and filter via PIP
-    area_frac  = max(area_approx / (4.0 * np.pi * EARTH_MEAN_RADIUS**2), 1e-9)
-    n_global   = max(n * 5, int(np.ceil(n / area_frac * 1.3)))
+    # Gonzalez (2009) Fibonacci sphere: N uniformly distributed sphere points
+    # give area per point ≈ 4πR²/N.  To achieve point_density m²/point over
+    # any polygon of area A, generate N = 4πR²/point_density global points;
+    # the expected number inside the polygon is then A/point_density,
+    # independent of the polygon's shape or bounding box.
+    # A 1.3× oversampling factor guards against Poisson under-count at the
+    # polygon boundary.  A floor of 5 000 ensures that even coarse densities
+    # on small polygons yield at least a few candidates to test.
+    _SPHERE_AREA = 4.0 * np.pi * EARTH_MEAN_RADIUS**2
+    n_global = max(5_000, int(np.ceil(_SPHERE_AREA / point_density * 1.3)))
     lat_r, lon_r = _fibonacci_sphere(n_global)
 
     # Shapely expects degrees (lon, lat) = (x, y)
@@ -905,11 +914,6 @@ def _sample_from_geom(
             "No sample points fell inside the geometry — "
             "check that coordinates are in geographic degrees (WGS84 / EPSG:4326)."
         )
-
-    if len(lat_in) > n:
-        idx    = np.round(np.linspace(0, len(lat_in) - 1, n)).astype(int)
-        lat_in = lat_in[idx]
-        lon_in = lon_in[idx]
 
     return lat_in, lon_in
 

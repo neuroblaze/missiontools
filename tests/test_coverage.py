@@ -575,7 +575,28 @@ def _make_shapefile(tmp_path, rings_lon_lat_deg, name='test'):
     path = str(tmp_path / f'{name}.shp')
     w = _pyshp.Writer(path, shapeType=5)
     w.field('name', 'C')
-    w.poly(rings_lon_lat_deg)   # [[outer], [hole], ...]  coords in (lon, lat)°
+
+    def _area2(ring):
+        n = len(ring)
+        return sum(ring[i][0] * ring[(i + 1) % n][1] -
+                   ring[(i + 1) % n][0] * ring[i][1]
+                   for i in range(n))
+
+    # ESRI convention: exterior rings are CW (negative signed area),
+    # hole rings are CCW (positive signed area).
+    fixed = []
+    for i, ring in enumerate(rings_lon_lat_deg):
+        pts = list(ring)
+        a2 = _area2(pts)
+        if i == 0:      # exterior: force CW
+            if a2 > 0:
+                pts = pts[::-1]
+        else:           # hole: force CCW
+            if a2 < 0:
+                pts = pts[::-1]
+        fixed.append(pts)
+
+    w.poly(fixed)
     w.record(name)
     w.close()
     return path
@@ -626,8 +647,8 @@ class TestSampleShapefile:
 
     def test_denser_density_gives_more_points(self, tmp_path):
         path = _make_shapefile(tmp_path, _BOX_10E)
-        _, lon_coarse = sample_shapefile(path, point_density=2e12)
-        _, lon_dense  = sample_shapefile(path, point_density=5e11)
+        _, lon_coarse = sample_shapefile(path, point_density=2e11)
+        _, lon_dense  = sample_shapefile(path, point_density=5e10)
         assert len(lon_dense) > len(lon_coarse)
 
     def test_feature_index_single(self, tmp_path):
