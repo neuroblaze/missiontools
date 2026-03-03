@@ -23,6 +23,9 @@ dev = [
     "jupyterlab",
     "ipykernel",
 ]
+plot = [
+    "cartopy",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
