@@ -28,3 +28,4 @@ from .ground_station import GroundStation
 from .aoi import AoI
 from .sensor import Sensor
 from .coverage_analysis import Coverage
+from .power import AbstractSolarConfig, NormalVectorSolarConfig

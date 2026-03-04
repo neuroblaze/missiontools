@@ -91,6 +91,7 @@ class Spacecraft:
         self.epoch = np.asarray(self.epoch, dtype='datetime64[us]').item()
         self._attitude_law: AttitudeLaw = AttitudeLaw.nadir()
         self._sensors: list = []
+        self._solar_configs: list = []
 
     @property
     def attitude_law(self) -> AttitudeLaw:
@@ -110,6 +111,36 @@ class Spacecraft:
     def sensors(self) -> list:
         """Sensors attached to this spacecraft (read-only copy)."""
         return list(self._sensors)
+
+    @property
+    def solar_configs(self) -> list:
+        """Solar configs attached to this spacecraft (read-only copy)."""
+        return list(self._solar_configs)
+
+    def add_solar_config(self, config) -> None:
+        """Attach a solar config to this spacecraft.
+
+        Sets the config's back-reference to this spacecraft and appends it to
+        the internal solar configs list.
+
+        Parameters
+        ----------
+        config : AbstractSolarConfig
+            The solar config to attach.
+
+        Raises
+        ------
+        TypeError
+            If ``config`` is not an :class:`~missiontools.power.AbstractSolarConfig` instance.
+        """
+        from .power.solar_config import AbstractSolarConfig  # local import avoids circular dep
+        if not isinstance(config, AbstractSolarConfig):
+            raise TypeError(
+                f"config must be an AbstractSolarConfig instance, "
+                f"got {type(config).__name__!r}"
+            )
+        config._spacecraft = self
+        self._solar_configs.append(config)
 
     def add_sensor(self, sensor) -> None:
         """Attach a Sensor to this spacecraft.

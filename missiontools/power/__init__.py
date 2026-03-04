@@ -11,3 +11,7 @@ Planned functionality
 - End-of-life power degradation
 - Power mode / duty cycle analysis
 """
+
+from .solar_config import AbstractSolarConfig, NormalVectorSolarConfig
+
+__all__ = ['AbstractSolarConfig', 'NormalVectorSolarConfig']
