@@ -477,7 +477,20 @@ class AttitudeLaw:
                       ) -> npt.NDArray[np.floating]:
         """Boresight unit vector(s) in the LVLH frame.
 
-        Parameters mirror :meth:`pointing_eci`.
+        Parameters
+        ----------
+        r_eci : array_like, shape ``(N, 3)`` or ``(3,)``
+            Host spacecraft ECI position(s) (m).
+        v_eci : array_like, shape ``(N, 3)`` or ``(3,)``
+            Host spacecraft ECI velocity(s) (m s⁻¹).
+        t : array_like of datetime64, shape ``(N,)`` or scalar
+            Observation epoch(s).
+
+        Returns
+        -------
+        npt.NDArray[np.floating]
+            Unit pointing vector(s) in LVLH, shape ``(N, 3)`` for array
+            inputs or ``(3,)`` for scalar inputs.
         """
         r     = np.asarray(r_eci, dtype=np.float64)
         scalar = r.ndim == 1
@@ -494,7 +507,20 @@ class AttitudeLaw:
                       ) -> npt.NDArray[np.floating]:
         """Boresight unit vector(s) in the ECEF frame.
 
-        Parameters mirror :meth:`pointing_eci`.
+        Parameters
+        ----------
+        r_eci : array_like, shape ``(N, 3)`` or ``(3,)``
+            Host spacecraft ECI position(s) (m).
+        v_eci : array_like, shape ``(N, 3)`` or ``(3,)``
+            Host spacecraft ECI velocity(s) (m s⁻¹).
+        t : array_like of datetime64, shape ``(N,)`` or scalar
+            Observation epoch(s).
+
+        Returns
+        -------
+        npt.NDArray[np.floating]
+            Unit pointing vector(s) in ECEF, shape ``(N, 3)`` for array
+            inputs or ``(3,)`` for scalar inputs.
         """
         r     = np.asarray(r_eci, dtype=np.float64)
         scalar = r.ndim == 1

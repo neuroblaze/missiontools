@@ -99,8 +99,13 @@ def propagate_analytical(t: list[datetime] | npt.NDArray[np.datetime64],
         Defaults to ``EARTH_MU``.
     central_body_j2 : float | np.floating, optional
         J2 perturbation parameter of the central body (m⁵/s²), defined as
-        μ × J₂ × R². Only used when ``type`` includes J2 perturbations.
+        :math:`\\mu J_2 R^2`.  Only used when ``type`` is ``"j2"``.
         Defaults to ``EARTH_J2``.
+    central_body_radius : float | np.floating, optional
+        Equatorial radius of the central body (m).  Accepted for API
+        consistency when unpacking a ``keplerian_params`` dict (see
+        :attr:`~missiontools.Spacecraft.keplerian_params`) but not used in
+        the propagation calculation.  Defaults to ``EARTH_MEAN_RADIUS``.
 
     Returns
     -------
@@ -276,13 +281,15 @@ def sun_synchronous_inclination(
         \\dot{\\Omega} = -\\frac{3}{2} \\frac{n J_2 R^2}{p^2} \\cos i
         \\;=\\; n_{\\odot}
 
-    Solving for inclination::
+    Solving for *i*:
 
-        \\cos i = -\\frac{2 n_{\\odot} p^2}{3 n J_2 R^2}
+    .. math::
+
+        \\cos i = -\\frac{2\\, n_{\\odot}\\, p^2}{3\\, n\\, J_2 R^2}
 
     where :math:`p = a(1-e^2)` is the semi-latus rectum,
     :math:`n = \\sqrt{\\mu / a^3}` is the mean motion, and
-    :math:`J_2 R^2 = ` ``central_body_j2 / central_body_mu``.
+    :math:`J_2 R^2` = ``central_body_j2 / central_body_mu``.
 
     Parameters
     ----------
@@ -293,7 +300,7 @@ def sun_synchronous_inclination(
     central_body_mu : float | np.floating, optional
         Standard gravitational parameter (m³/s²). Defaults to ``EARTH_MU``.
     central_body_j2 : float | np.floating, optional
-        Combined J2 parameter μ × J₂_dim × R² (m⁵/s²). Defaults to
+        Combined J2 parameter :math:`\\mu J_2 R^2` (m⁵/s²). Defaults to
         ``EARTH_J2``.
 
     Returns

@@ -1,15 +1,66 @@
 """
 missiontools.orbit
 ==================
-Orbital mechanics and propagation.
+Orbital mechanics, propagation, coordinate frame transformations, and access
+analysis.
+
+Propagation
+-----------
+:func:`propagate_analytical`
+    Analytically propagate a Keplerian orbit to ECI state vectors.
+    Supports unperturbed two-body motion and mean J2 secular perturbations.
+:func:`sun_synchronous_inclination`
+    Required inclination for a sun-synchronous RAAN precession rate.
+:func:`sun_synchronous_orbit`
+    Keplerian elements for a circular sun-synchronous orbit, given altitude
+    and local solar time at the ascending or descending node.
+:func:`geostationary_orbit`
+    Keplerian elements for a geostationary orbit at a given longitude.
+:func:`highly_elliptical_orbit`
+    Keplerian elements for a critically inclined HEO (Molniya-style) with
+    frozen apsides, given period, eccentricity, and apogee placement.
+
+Frame transformations
+---------------------
+:func:`gmst`
+    Greenwich Mean Sidereal Time (rad) from UTC epochs using the IAU 1982
+    polynomial.
+:func:`eci_to_ecef` / :func:`ecef_to_eci`
+    Rotate vectors between ECI and ECEF via GMST rotation.
+:func:`geodetic_to_ecef`
+    Convert WGS84 geodetic coordinates (latitude, longitude, altitude) to
+    ECEF Cartesian.
+:func:`eci_to_lvlh` / :func:`lvlh_to_eci`
+    Rotate vectors between ECI and the LVLH (RSW) frame, defined with
+    **x̂** = radial, **ŷ** = along-track, **ẑ** = orbit-normal.
+:func:`sun_vec_eci`
+    Low-precision (≈0.01°) unit vector toward the Sun in ECI using the
+    Astronomical Almanac algorithm.
+
+Access analysis
+---------------
+:func:`earth_access`
+    Instantaneous boolean visibility array for a ground station.
+:func:`earth_access_intervals`
+    Time intervals when a satellite is visible above an elevation mask.
+    Uses coarse scan followed by binary-search edge refinement.
+:func:`space_to_space_access`
+    Instantaneous LOS check between two spacecraft (spherical body model).
+:func:`space_to_space_access_intervals`
+    Time intervals with unobstructed LOS between two spacecraft.
+
+Eclipse
+-------
+:func:`in_sunlight`
+    Cylindrical shadow model — returns ``True`` where the spacecraft is
+    outside the Earth's shadow.
 
 Planned functionality
 ---------------------
-- Keplerian orbital elements
-- Orbit propagation (analytical and numerical)
+- Numerical orbit propagation (RK4 / RK78)
+- Orbital manoeuvres (Hohmann, plane change, bi-elliptic)
+- Relative motion (Clohessy–Wiltshire / Hill's equations)
 - Ground track computation
-- Orbital manoeuvres (Hohmann, plane change, etc.)
-- Relative motion (CW / Hill's equations)
 """
 
 from .propagation import (propagate_analytical, sun_synchronous_inclination,

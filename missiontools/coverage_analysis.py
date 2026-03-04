@@ -262,9 +262,18 @@ class Coverage:
         Returns
         -------
         dict
-            ``'max_revisit'``, ``'mean_revisit'``, ``'global_max'``,
-            ``'global_mean'``.  See
-            :func:`~missiontools.coverage.revisit_time`.
+            ``'max_revisit'`` : ``(M,)`` float — maximum gap between
+            consecutive accesses for each ground point (s).  ``nan`` for
+            points with fewer than two accesses.
+
+            ``'mean_revisit'`` : ``(M,)`` float — mean gap (s).  ``nan``
+            for points with fewer than two accesses.
+
+            ``'global_max'`` : float — maximum value across all points (s).
+            ``nan`` if no point has two or more accesses.
+
+            ``'global_mean'`` : float — mean of per-point mean revisit
+            times (s).  ``nan`` if no point has two or more accesses.
         """
         sza_max, sza_min = self._sza_rad()
         lat = self._aoi.lat_rad

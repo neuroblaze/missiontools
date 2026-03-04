@@ -188,7 +188,30 @@ class Sensor:
                      ) -> npt.NDArray[np.floating]:
         """Boresight unit vector(s) in the ECI frame.
 
-        Parameters mirror :meth:`~missiontools.AttitudeLaw.pointing_eci`.
+        For ``body_vector`` / ``body_euler_deg`` sensors the host spacecraft's
+        :attr:`~missiontools.Spacecraft.attitude_law` is used to transform
+        the body-frame boresight to ECI.
+
+        Parameters
+        ----------
+        r_eci : array_like, shape ``(N, 3)`` or ``(3,)``
+            Host spacecraft ECI position(s) (m).
+        v_eci : array_like, shape ``(N, 3)`` or ``(3,)``
+            Host spacecraft ECI velocity(s) (m s⁻¹).
+        t : array_like of datetime64, shape ``(N,)`` or scalar
+            Observation epoch(s).
+
+        Returns
+        -------
+        npt.NDArray[np.floating]
+            Unit boresight vector(s) in ECI, shape ``(N, 3)`` for array
+            inputs or ``(3,)`` for scalar inputs.
+
+        Raises
+        ------
+        RuntimeError
+            If the sensor is in body mode and has not been attached to a
+            spacecraft via :meth:`~missiontools.Spacecraft.add_sensor`.
         """
         if self._mode == 'independent':
             return self._attitude_law.pointing_eci(r_eci, v_eci, t)
@@ -210,7 +233,20 @@ class Sensor:
                       ) -> npt.NDArray[np.floating]:
         """Boresight unit vector(s) in the LVLH frame.
 
-        Parameters mirror :meth:`~missiontools.AttitudeLaw.pointing_eci`.
+        Parameters
+        ----------
+        r_eci : array_like, shape ``(N, 3)`` or ``(3,)``
+            Host spacecraft ECI position(s) (m).
+        v_eci : array_like, shape ``(N, 3)`` or ``(3,)``
+            Host spacecraft ECI velocity(s) (m s⁻¹).
+        t : array_like of datetime64, shape ``(N,)`` or scalar
+            Observation epoch(s).
+
+        Returns
+        -------
+        npt.NDArray[np.floating]
+            Unit boresight vector(s) in LVLH, shape ``(N, 3)`` for array
+            inputs or ``(3,)`` for scalar inputs.
         """
         if self._mode == 'independent':
             return self._attitude_law.pointing_lvlh(r_eci, v_eci, t)
@@ -230,7 +266,20 @@ class Sensor:
                       ) -> npt.NDArray[np.floating]:
         """Boresight unit vector(s) in the ECEF frame.
 
-        Parameters mirror :meth:`~missiontools.AttitudeLaw.pointing_eci`.
+        Parameters
+        ----------
+        r_eci : array_like, shape ``(N, 3)`` or ``(3,)``
+            Host spacecraft ECI position(s) (m).
+        v_eci : array_like, shape ``(N, 3)`` or ``(3,)``
+            Host spacecraft ECI velocity(s) (m s⁻¹).
+        t : array_like of datetime64, shape ``(N,)`` or scalar
+            Observation epoch(s).
+
+        Returns
+        -------
+        npt.NDArray[np.floating]
+            Unit boresight vector(s) in ECEF, shape ``(N, 3)`` for array
+            inputs or ``(3,)`` for scalar inputs.
         """
         if self._mode == 'independent':
             return self._attitude_law.pointing_ecef(r_eci, v_eci, t)
