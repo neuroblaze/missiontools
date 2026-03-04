@@ -9,7 +9,8 @@ import numpy as np
 import numpy.typing as npt
 
 from ..orbit.frames import (eci_to_ecef, eci_to_lvlh,
-                             ecef_to_eci, lvlh_to_eci)
+                             ecef_to_eci, lvlh_to_eci,
+                             sun_vec_eci)
 from ..orbit.propagation import propagate_analytical
 
 _VALID_FRAMES = frozenset({'lvlh', 'eci', 'ecef'})
@@ -77,15 +78,17 @@ def _q_rotate(q: npt.NDArray, v: npt.NDArray) -> npt.NDArray:
     ])
 
 
-def _q_from_vec_batch(vecs: npt.NDArray, roll: float = 0.0) -> npt.NDArray:
+def _q_from_vec_batch(vecs: npt.NDArray,
+                      roll: float | npt.NDArray = 0.0) -> npt.NDArray:
     """Vectorized :func:`_q_from_vec` over N directions.
 
     Parameters
     ----------
     vecs : npt.NDArray, shape (N, 3)
         Target boresight directions (must be unit vectors).
-    roll : float
-        Roll angle (rad) about each boresight axis.
+    roll : float or ndarray of shape (N,)
+        Roll angle(s) (rad) about each boresight axis.  Scalar applies
+        the same roll to every quaternion; an array gives per-element rolls.
 
     Returns
     -------
@@ -108,12 +111,13 @@ def _q_from_vec_batch(vecs: npt.NDArray, roll: float = 0.0) -> npt.NDArray:
 
     q_min = half / np.linalg.norm(half, axis=1, keepdims=True)
 
-    if roll == 0.0:
+    roll_arr = np.asarray(roll)
+    if roll_arr.ndim == 0 and float(roll_arr) == 0.0:
         return q_min
 
     # Compose q_min[n] ⊗ q_roll  where  q_roll = [cr, 0, 0, sr]
     # Simplified Hamilton product with x2=y2=0:
-    cr, sr = np.cos(roll / 2), np.sin(roll / 2)
+    cr, sr = np.cos(roll_arr / 2), np.sin(roll_arr / 2)
     w, x, y, z = q_min[:, 0], q_min[:, 1], q_min[:, 2], q_min[:, 3]
     return np.stack([
         w*cr - z*sr,
@@ -232,6 +236,9 @@ class AttitudeLaw:
         self._roll   = roll    # roll about boresight for 'track' mode
         # Pre-compute boresight direction in the reference frame for 'fixed'
         self._pointing_in_ref = _q_boresight(q) if q is not None else None
+        # Yaw steering state
+        self._solar_config  = None   # AbstractSolarConfig, or None
+        self._yaw_opt_dir   = None   # (3,) body-frame direction to face sun
 
     # ------------------------------------------------------------------
     # Factory classmethods
@@ -321,6 +328,99 @@ class AttitudeLaw:
             q_roll = np.array([np.cos(roll / 2), 0., 0., np.sin(roll / 2)])
             q = _q_compose(_NADIR_Q, q_roll)
         return cls('fixed', q=q, frame='lvlh')
+
+    # ------------------------------------------------------------------
+    # Yaw steering
+    # ------------------------------------------------------------------
+
+    def yaw_steering(self, solar_config) -> None:
+        """Enable or disable solar yaw steering.
+
+        When active, the roll DOF is controlled dynamically at each timestep
+        to maximise solar power generation.  The boresight direction is
+        unchanged; only the rotation about the boresight is affected.
+
+        Parameters
+        ----------
+        solar_config : AbstractSolarConfig or None
+            Solar config whose :meth:`optimal_angle` defines the preferred
+            sun-facing direction in the body frame.  Pass ``None`` to
+            deactivate yaw steering and revert to the static roll angle.
+
+        Raises
+        ------
+        TypeError
+            If ``solar_config`` is not an
+            :class:`~missiontools.power.AbstractSolarConfig` or ``None``.
+        """
+        if solar_config is None:
+            self._solar_config = None
+            self._yaw_opt_dir  = None
+            return
+
+        from ..power.solar_config import AbstractSolarConfig
+        if not isinstance(solar_config, AbstractSolarConfig):
+            raise TypeError(
+                f"solar_config must be an AbstractSolarConfig instance or "
+                f"None, got {type(solar_config).__name__!r}"
+            )
+
+        # Pre-compute the body-frame direction that should face the sun.
+        # optimal_angle returns theta measured from basis u=[0,1,0], v=[-1,0,0]
+        # (when rotation_axis=[0,0,1]).  The sun-facing direction is -d(theta):
+        #   -d = -cos(theta)*u - sin(theta)*v = [sin(theta), -cos(theta), 0]
+        theta = solar_config.optimal_angle(np.array([0., 0., 1.]))
+        self._yaw_opt_dir  = np.array([
+            np.sin(theta), -np.cos(theta), 0.0,
+        ])
+        self._solar_config = solar_config
+
+    def _compute_yaw_rolls(self, b_eci, r_2d, v_2d, t_arr):
+        """Compute per-timestep roll angles for yaw steering.
+
+        Parameters
+        ----------
+        b_eci : ndarray, shape (N, 3)
+            Boresight unit vectors in ECI (independent of roll).
+        r_2d, v_2d : ndarray, shape (N, 3)
+            Spacecraft ECI position and velocity.
+        t_arr : ndarray, shape (N,)
+            Timestamps (datetime64[us]).
+
+        Returns
+        -------
+        ndarray, shape (N,)
+            Roll angles (rad) that align the optimal body-frame direction
+            with the sun.
+        """
+        N = len(t_arr)
+        s_eci = np.atleast_2d(sun_vec_eci(t_arr))       # (N, 3)
+
+        # At roll=0, rotate the optimal body-frame direction to ref frame
+        if self._mode == 'fixed':
+            q0 = _q_from_vec(self._pointing_in_ref)      # base quat, roll=0
+            d0_ref = _q_rotate(q0, self._yaw_opt_dir)    # (3,) in ref frame
+            d0_ref_tiled = np.tile(d0_ref, (N, 1))       # (N, 3)
+            if   self._frame == 'eci':  d0_eci = d0_ref_tiled
+            elif self._frame == 'lvlh': d0_eci = lvlh_to_eci(d0_ref_tiled, r_2d, v_2d)
+            else:                       d0_eci = ecef_to_eci(d0_ref_tiled, t_arr)
+        else:  # 'track'
+            # b_eci are per-timestep boresight directions; build roll=0 quats
+            qs0   = _q_from_vec_batch(b_eci)             # (N, 4) roll=0
+            d0_eci = _q_rotate_batch(qs0, self._yaw_opt_dir)  # (N, 3) in ECI
+
+        # Project d0_eci and sun into the plane perpendicular to boresight
+        d0_dot_b = np.einsum('ij,ij->i', d0_eci, b_eci)     # (N,)
+        d0_perp  = d0_eci - d0_dot_b[:, None] * b_eci       # (N, 3)
+
+        s_dot_b  = np.einsum('ij,ij->i', s_eci, b_eci)      # (N,)
+        s_perp   = s_eci - s_dot_b[:, None] * b_eci          # (N, 3)
+
+        # Signed angle from d0_perp to s_perp about b_eci
+        cross  = np.cross(d0_perp, s_perp)                   # (N, 3)
+        sin_a  = np.einsum('ij,ij->i', cross, b_eci)         # (N,)
+        cos_a  = np.einsum('ij,ij->i', d0_perp, s_perp)      # (N,)
+        return np.arctan2(sin_a, cos_a)                       # (N,)
 
     # ------------------------------------------------------------------
     # Pointing methods
@@ -442,11 +542,28 @@ class AttitudeLaw:
         N     = len(r_2d)
 
         if self._mode == 'fixed':
-            v_ref = _q_rotate(self._q, v)                      # (3,) in ref frame
-            tiled = np.tile(v_ref, (N, 1))                     # (N, 3)
-            if   self._frame == 'eci':  vecs = tiled
-            elif self._frame == 'lvlh': vecs = lvlh_to_eci(tiled, r_2d, v_2d)
-            else:                       vecs = ecef_to_eci(tiled, t_arr)
+            if self._solar_config is not None:
+                # Yaw steering: per-timestep roll
+                boresight = self._pointing_in_ref              # (3,) in ref frame
+                b_ref = np.tile(boresight, (N, 1))             # (N, 3) in ref
+                if   self._frame == 'eci':  b_eci = b_ref
+                elif self._frame == 'lvlh': b_eci = lvlh_to_eci(b_ref, r_2d, v_2d)
+                else:                       b_eci = ecef_to_eci(b_ref, t_arr)
+                b_eci = b_eci / np.linalg.norm(b_eci, axis=1, keepdims=True)
+                yaw_rolls = self._compute_yaw_rolls(b_eci, r_2d, v_2d, t_arr)
+                qs = _q_from_vec_batch(
+                    np.tile(boresight, (N, 1)), roll=yaw_rolls,
+                )                                              # (N, 4)
+                vecs_ref = _q_rotate_batch(qs, v)              # (N, 3) in ref
+                if   self._frame == 'eci':  vecs = vecs_ref
+                elif self._frame == 'lvlh': vecs = lvlh_to_eci(vecs_ref, r_2d, v_2d)
+                else:                       vecs = ecef_to_eci(vecs_ref, t_arr)
+            else:
+                v_ref = _q_rotate(self._q, v)                  # (3,) in ref frame
+                tiled = np.tile(v_ref, (N, 1))                 # (N, 3)
+                if   self._frame == 'eci':  vecs = tiled
+                elif self._frame == 'lvlh': vecs = lvlh_to_eci(tiled, r_2d, v_2d)
+                else:                       vecs = ecef_to_eci(tiled, t_arr)
         else:  # 'track'
             r_tgt, _ = propagate_analytical(
                 t_arr, **self._target.keplerian_params,
@@ -454,7 +571,12 @@ class AttitudeLaw:
             )
             d    = r_tgt - r_2d
             d    = d / np.linalg.norm(d, axis=1, keepdims=True)  # (N, 3) unit
-            qs   = _q_from_vec_batch(d, roll=self._roll)          # (N, 4)
+            if self._solar_config is not None:
+                b_eci = d  # boresight in ECI = direction to target
+                yaw_rolls = self._compute_yaw_rolls(b_eci, r_2d, v_2d, t_arr)
+                qs = _q_from_vec_batch(d, roll=yaw_rolls)
+            else:
+                qs = _q_from_vec_batch(d, roll=self._roll)
             vecs = _q_rotate_batch(qs, v)                         # (N, 3)
 
         result = vecs / np.linalg.norm(vecs, axis=1, keepdims=True)
