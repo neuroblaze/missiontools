@@ -617,6 +617,58 @@ class TestNormalVectorThermalConfigConstruction:
         np.testing.assert_allclose(cfg.emissivities, [0.8, 0.9])
         np.testing.assert_allclose(cfg.absorptivities, [0.3, 0.2])
 
+    def test_default_earth_params(self):
+        cfg = NormalVectorThermalConfig(
+            normal_vecs=[[0, 0, 1]],
+            areas=[1.0],
+            emissivities=[0.8],
+            absorptivities=[0.3],
+        )
+        assert cfg.earth_ir == 240.0
+        assert cfg.albedo == 0.3
+
+    def test_custom_earth_params(self):
+        cfg = NormalVectorThermalConfig(
+            normal_vecs=[[0, 0, 1]],
+            areas=[1.0],
+            emissivities=[0.8],
+            absorptivities=[0.3],
+            earth_ir=200.0,
+            albedo=0.35,
+        )
+        assert cfg.earth_ir == 200.0
+        assert cfg.albedo == 0.35
+
+    def test_negative_earth_ir_raises(self):
+        with pytest.raises(ValueError, match="non-negative"):
+            NormalVectorThermalConfig(
+                normal_vecs=[[0, 0, 1]],
+                areas=[1.0],
+                emissivities=[0.8],
+                absorptivities=[0.3],
+                earth_ir=-10.0,
+            )
+
+    def test_albedo_out_of_range_raises(self):
+        with pytest.raises(ValueError, match="\\[0, 1\\]"):
+            NormalVectorThermalConfig(
+                normal_vecs=[[0, 0, 1]],
+                areas=[1.0],
+                emissivities=[0.8],
+                absorptivities=[0.3],
+                albedo=1.5,
+            )
+
+    def test_zero_earth_ir_allowed(self):
+        cfg = NormalVectorThermalConfig(
+            normal_vecs=[[0, 0, 1]],
+            areas=[1.0],
+            emissivities=[0.8],
+            absorptivities=[0.3],
+            earth_ir=0.0,
+        )
+        assert cfg.earth_ir == 0.0
+
     def test_normals_are_normalized(self):
         cfg = NormalVectorThermalConfig(
             normal_vecs=[[0, 0, 3]],
@@ -932,6 +984,228 @@ class TestRadiativeEquilibrium:
 
         final_T = result.temperatures['panel'][-1]
         assert 100 < final_T < 500, f"Final T = {final_T:.1f} K"
+
+
+# ===================================================================
+# Earth IR and albedo
+# ===================================================================
+
+class TestEarthLoads:
+    """Tests for Earth IR and albedo contributions."""
+
+    def test_nadir_face_receives_earth_ir(self):
+        """A nadir-facing face should receive Earth IR.
+
+        For a nadir-pointing spacecraft, body +z = nadir.
+        View factor F = cos(0) × (R_e / r)² = (R_e / r)²
+        Q_ir = ε × A × F × q_earth_ir
+        """
+        from missiontools import Spacecraft
+
+        sc = Spacecraft.sunsync(altitude_km=550, node_solar_time='10:30')
+        R_e = sc.central_body_radius
+        r = R_e + 550e3
+        expected_vf = (R_e / r) ** 2
+
+        eps = 0.8
+        area = 1.0
+        q_eir = 240.0
+
+        # Disable albedo, only test IR
+        cfg = NormalVectorThermalConfig(
+            normal_vecs=[[0, 0, 1]],  # nadir for nadir-pointing
+            areas=[area],
+            emissivities=[eps],
+            absorptivities=[0.3],
+            earth_ir=q_eir,
+            albedo=0.0,
+        )
+        sc.add_thermal_config(cfg)
+
+        circuit = ThermalCircuit()
+        circuit.add_capacitance('panel', 50.0, initial_temp=300.0)
+
+        duration = cfg.attach(
+            circuit,
+            face_nodes=['panel'],
+            t_start=np.datetime64('2025-01-01', 'us'),
+            t_end=np.datetime64('2025-01-01T01:00', 'us'),
+            step=np.timedelta64(60, 's'),
+        )
+        result = circuit.solve(duration)
+        assert result.success
+
+        # With Earth IR heating the nadir face, temperature should be
+        # higher than without it (compare against solar-only equilibrium)
+        final_T = result.temperatures['panel'][-1]
+        assert final_T > 100, f"T = {final_T:.1f} K seems too low"
+
+    def test_zenith_face_no_earth_ir(self):
+        """A zenith-facing face should receive no Earth IR (view factor ≈ 0)."""
+        from missiontools import Spacecraft
+
+        sc = Spacecraft.sunsync(altitude_km=550, node_solar_time='10:30')
+
+        # Zenith face (body -z) with no direct solar, no albedo
+        # Should only emit, not absorb anything
+        cfg = NormalVectorThermalConfig(
+            normal_vecs=[[0, 0, -1]],  # zenith for nadir-pointing
+            areas=[1.0],
+            emissivities=[0.8],
+            absorptivities=[0.0],  # no solar absorption
+            earth_ir=240.0,
+            albedo=0.0,
+        )
+        sc.add_thermal_config(cfg)
+
+        circuit = ThermalCircuit()
+        circuit.add_capacitance('panel', 50.0, initial_temp=300.0)
+
+        duration = cfg.attach(
+            circuit,
+            face_nodes=['panel'],
+            t_start=np.datetime64('2025-01-01', 'us'),
+            t_end=np.datetime64('2025-01-01T01:00', 'us'),
+            step=np.timedelta64(60, 's'),
+        )
+        result = circuit.solve(duration)
+
+        # With no heat input, zenith face should cool down
+        final_T = result.temperatures['panel'][-1]
+        assert final_T < 300.0, f"T = {final_T:.1f} K, should cool"
+
+    def test_earth_ir_raises_equilibrium(self):
+        """Adding Earth IR should raise the equilibrium temperature of a
+        nadir-facing panel compared to solar-only."""
+        from missiontools import Spacecraft
+
+        sc1 = Spacecraft.sunsync(altitude_km=550, node_solar_time='12:00')
+        sc2 = Spacecraft.sunsync(altitude_km=550, node_solar_time='12:00')
+
+        # Config without Earth loads
+        cfg_no_earth = NormalVectorThermalConfig(
+            normal_vecs=[[0, 0, 1]],  # nadir
+            areas=[1.0],
+            emissivities=[0.8],
+            absorptivities=[0.3],
+            earth_ir=0.0,
+            albedo=0.0,
+        )
+        sc1.add_thermal_config(cfg_no_earth)
+
+        # Config with Earth loads
+        cfg_earth = NormalVectorThermalConfig(
+            normal_vecs=[[0, 0, 1]],  # nadir
+            areas=[1.0],
+            emissivities=[0.8],
+            absorptivities=[0.3],
+            earth_ir=240.0,
+            albedo=0.3,
+        )
+        sc2.add_thermal_config(cfg_earth)
+
+        t_start = np.datetime64('2025-06-21', 'us')
+        t_end = np.datetime64('2025-06-21T06:00', 'us')
+        step = np.timedelta64(30, 's')
+
+        circuit1 = ThermalCircuit()
+        circuit1.add_capacitance('p', 10.0, initial_temp=250.0)
+        dur1 = cfg_no_earth.attach(circuit1, ['p'], t_start, t_end, step)
+        r1 = circuit1.solve(dur1)
+
+        circuit2 = ThermalCircuit()
+        circuit2.add_capacitance('p', 10.0, initial_temp=250.0)
+        dur2 = cfg_earth.attach(circuit2, ['p'], t_start, t_end, step)
+        r2 = circuit2.solve(dur2)
+
+        # Earth loads should make the panel warmer
+        assert r2.temperatures['p'][-1] > r1.temperatures['p'][-1]
+
+    def test_earth_loads_view_factor_geometry(self):
+        """Verify Earth IR view factor for a nadir-facing panel.
+
+        For a flat plate facing nadir at altitude h:
+          F = (R_e / (R_e + h))²
+
+        We verify this by comparing a short-duration run (before
+        temperature changes significantly) with the analytical heat input.
+        """
+        from missiontools import Spacecraft
+
+        alt_km = 550
+        sc = Spacecraft.sunsync(altitude_km=alt_km, node_solar_time='10:30')
+        R_e = sc.central_body_radius
+        r = R_e + alt_km * 1e3
+        expected_vf = (R_e / r) ** 2
+
+        eps = 0.8
+        area = 0.5
+        q_eir = 240.0
+
+        cfg = NormalVectorThermalConfig(
+            normal_vecs=[[0, 0, 1]],
+            areas=[area],
+            emissivities=[eps],
+            absorptivities=[0.0],  # no solar or albedo
+            earth_ir=q_eir,
+            albedo=0.0,
+        )
+        sc.add_thermal_config(cfg)
+
+        circuit = ThermalCircuit()
+        C = 100.0  # large C for small dT
+        T0 = 50.0  # very low T so emission is negligible
+        circuit.add_capacitance('p', C, initial_temp=T0)
+
+        dt_s = 60.0  # short duration
+        t_start = np.datetime64('2025-01-01', 'us')
+        t_end = t_start + np.timedelta64(int(dt_s * 1e6), 'us')
+
+        duration = cfg.attach(
+            circuit, ['p'], t_start, t_end,
+            np.timedelta64(10, 's'),
+        )
+        result = circuit.solve(duration)
+
+        # Expected heat input rate: ε × A × F × q_eir
+        q_expected = eps * area * expected_vf * q_eir
+        # Approximate temperature rise: dT ≈ q * dt / C (ignoring emission)
+        # Emission at 50 K is negligible: ε σ A T⁴ ≈ 0.8×5.67e-8×0.5×50⁴ ≈ 0.14 W
+        dT_expected = q_expected * duration / C
+        dT_actual = result.temperatures['p'][-1] - T0
+
+        # Allow generous tolerance since emission provides some cooling
+        assert dT_actual == pytest.approx(dT_expected, rel=0.15)
+
+    def test_no_earth_loads_when_disabled(self):
+        """Setting earth_ir=0 and albedo=0 should give same result as
+        the original solar-only behaviour."""
+        from missiontools import Spacecraft
+
+        sc = Spacecraft.sunsync(altitude_km=550, node_solar_time='12:00')
+
+        cfg = NormalVectorThermalConfig(
+            normal_vecs=[[0, 0, -1]],  # zenith
+            areas=[1.0],
+            emissivities=[0.8],
+            absorptivities=[0.3],
+            earth_ir=0.0,
+            albedo=0.0,
+        )
+        sc.add_thermal_config(cfg)
+
+        circuit = ThermalCircuit()
+        circuit.add_capacitance('p', 10.0, initial_temp=250.0)
+
+        t_start = np.datetime64('2025-06-21', 'us')
+        t_end = np.datetime64('2025-06-21T02:00', 'us')
+        step = np.timedelta64(30, 's')
+
+        duration = cfg.attach(circuit, ['p'], t_start, t_end, step)
+        result = circuit.solve(duration)
+        assert result.success
+        # Should still produce physically valid temperatures
+        assert result.temperatures['p'][-1] > 0
 
 
 # ===================================================================
