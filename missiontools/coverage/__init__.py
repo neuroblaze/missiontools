@@ -53,7 +53,9 @@ from .coverage import (sample_aoi, sample_region, sample_shapefile,
                        make_sensor_spec, coverage_fraction_multi,
                        pointwise_coverage_multi,
                        collect_access_intervals_multi,
-                       load_shapefile_geometry)
+                       load_shapefile_geometry,
+                       sample_from_geometry,
+                       geography_geometry)
 
 __all__ = ['sample_aoi', 'sample_region', 'sample_shapefile',
            'sample_geography',
@@ -61,4 +63,6 @@ __all__ = ['sample_aoi', 'sample_region', 'sample_shapefile',
            'access_pointwise', 'revisit_pointwise',
            'make_sensor_spec', 'coverage_fraction_multi',
            'pointwise_coverage_multi', 'collect_access_intervals_multi',
-           'load_shapefile_geometry']
+           'load_shapefile_geometry',
+           'sample_from_geometry',
+           'geography_geometry']

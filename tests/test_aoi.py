@@ -105,11 +105,32 @@ class TestAoIFromRegion:
                                lon_min_deg=30,  lon_max_deg=60)
         assert isinstance(aoi, AoI)
 
+    def test_lazy_before_access(self):
+        aoi = AoI.from_region(lat_min_deg=-10, lat_max_deg=10,
+                               lon_min_deg=30,  lon_max_deg=60)
+        assert aoi._lat is None
+
+    def test_lazy_after_access(self):
+        aoi = AoI.from_region(lat_min_deg=-10, lat_max_deg=10,
+                               lon_min_deg=30,  lon_max_deg=60)
+        _ = aoi.lat_rad
+        assert aoi._lat is not None
+
+    def test_geometry_set(self):
+        aoi = AoI.from_region(lat_min_deg=-10, lat_max_deg=10)
+        assert aoi.geometry is not None
+
+    def test_geometry_is_box(self):
+        from shapely.geometry import Polygon
+        aoi = AoI.from_region(lat_min_deg=-10, lat_max_deg=10,
+                               lon_min_deg=30,  lon_max_deg=60)
+        assert isinstance(aoi.geometry, Polygon)
+
     def test_points_in_lat_bounds(self):
         lat_min, lat_max = -10.0, 10.0
         aoi = AoI.from_region(lat_min_deg=lat_min, lat_max_deg=lat_max,
                                lon_min_deg=30,      lon_max_deg=60,
-                               point_density=5e12)
+                               point_density=5e6)
         assert np.all(aoi.lat >= lat_min - 1e-6)
         assert np.all(aoi.lat <= lat_max + 1e-6)
 
@@ -117,17 +138,13 @@ class TestAoIFromRegion:
         lon_min, lon_max = 30.0, 60.0
         aoi = AoI.from_region(lat_min_deg=-10, lat_max_deg=10,
                                lon_min_deg=lon_min, lon_max_deg=lon_max,
-                               point_density=5e12)
+                               point_density=5e6)
         assert np.all(aoi.lon >= lon_min - 1e-6)
         assert np.all(aoi.lon <= lon_max + 1e-6)
 
     def test_global_region_nonempty(self):
         aoi = AoI.from_region()
         assert len(aoi) > 0
-
-    def test_geometry_none(self):
-        aoi = AoI.from_region(lat_min_deg=-10, lat_max_deg=10)
-        assert aoi.geometry is None
 
     def test_shapefile_path_none(self):
         aoi = AoI.from_region(lat_min_deg=-10, lat_max_deg=10)
@@ -140,12 +157,15 @@ class TestAoIFromRegion:
         np.testing.assert_allclose(aoi.lon, np.degrees(aoi.lon_rad))
 
     def test_denser_gives_more_points(self):
+        # The Fibonacci-sphere floor is 5 000 global points, reached when
+        # density > ~1.73e5 km²/pt.  One value must be finer than that floor
+        # to see a count difference (see MEMORY.md notes on Fibonacci floor).
         aoi_coarse = AoI.from_region(lat_min_deg=-10, lat_max_deg=10,
                                       lon_min_deg=30,  lon_max_deg=60,
-                                      point_density=2e12)
+                                      point_density=2e5)   # hits floor → ~73 pts
         aoi_dense  = AoI.from_region(lat_min_deg=-10, lat_max_deg=10,
                                       lon_min_deg=30,  lon_max_deg=60,
-                                      point_density=5e11)
+                                      point_density=5e4)   # above floor → more pts
         assert len(aoi_dense) > len(aoi_coarse)
 
 
@@ -157,27 +177,32 @@ class TestAoIFromShapefile:
 
     def test_returns_aoi(self, tmp_path):
         path = _make_shapefile(tmp_path, _BOX_10E)
-        aoi = AoI.from_shapefile(path, point_density=5e12)
+        aoi = AoI.from_shapefile(path, point_density=5e6)
         assert isinstance(aoi, AoI)
+
+    def test_lazy_before_access(self, tmp_path):
+        path = _make_shapefile(tmp_path, _BOX_10E)
+        aoi = AoI.from_shapefile(path, point_density=5e6)
+        assert aoi._lat is None
 
     def test_points_nonempty(self, tmp_path):
         path = _make_shapefile(tmp_path, _BOX_10E)
-        aoi = AoI.from_shapefile(path, point_density=5e12)
+        aoi = AoI.from_shapefile(path, point_density=5e6)
         assert len(aoi) > 0
 
     def test_geometry_set(self, tmp_path):
         path = _make_shapefile(tmp_path, _BOX_10E)
-        aoi = AoI.from_shapefile(path, point_density=5e12)
+        aoi = AoI.from_shapefile(path, point_density=5e6)
         assert aoi.geometry is not None
 
     def test_shapefile_path_set(self, tmp_path):
         path = _make_shapefile(tmp_path, _BOX_10E)
-        aoi = AoI.from_shapefile(path, point_density=5e12)
+        aoi = AoI.from_shapefile(path, point_density=5e6)
         assert aoi.shapefile_path == str(path)
 
     def test_lat_lon_degrees_range(self, tmp_path):
         path = _make_shapefile(tmp_path, _BOX_10E)
-        aoi = AoI.from_shapefile(path, point_density=5e12)
+        aoi = AoI.from_shapefile(path, point_density=5e6)
         assert np.all(aoi.lat >= -90.0)
         assert np.all(aoi.lat <=  90.0)
         assert np.all(aoi.lon >= -180.0)
@@ -185,19 +210,19 @@ class TestAoIFromShapefile:
 
     def test_lat_rad_range(self, tmp_path):
         path = _make_shapefile(tmp_path, _BOX_10E)
-        aoi = AoI.from_shapefile(path, point_density=5e12)
+        aoi = AoI.from_shapefile(path, point_density=5e6)
         assert np.all(aoi.lat_rad >= -np.pi / 2)
         assert np.all(aoi.lat_rad <=  np.pi / 2)
 
     def test_lat_lon_consistent(self, tmp_path):
         path = _make_shapefile(tmp_path, _BOX_10E)
-        aoi = AoI.from_shapefile(path, point_density=5e12)
+        aoi = AoI.from_shapefile(path, point_density=5e6)
         np.testing.assert_allclose(aoi.lat, np.degrees(aoi.lat_rad))
         np.testing.assert_allclose(aoi.lon, np.degrees(aoi.lon_rad))
 
     def test_repr_contains_shapefile(self, tmp_path):
         path = _make_shapefile(tmp_path, _BOX_10E)
-        aoi = AoI.from_shapefile(path, point_density=5e12)
+        aoi = AoI.from_shapefile(path, point_density=5e6)
         assert 'shapefile' in repr(aoi)
 
 
@@ -210,6 +235,10 @@ class TestAoIFromGeography:
     def test_returns_aoi(self):
         aoi = AoI.from_geography('Canada')
         assert isinstance(aoi, AoI)
+
+    def test_lazy_before_access(self):
+        aoi = AoI.from_geography('Canada')
+        assert aoi._lat is None
 
     def test_nonempty(self):
         aoi = AoI.from_geography('Canada')
@@ -240,3 +269,152 @@ class TestAoIFromGeography:
         import pytest
         with pytest.raises(ValueError):
             AoI.from_geography('Narnia')
+
+
+# ---------------------------------------------------------------------------
+# TestAoISetOps
+# ---------------------------------------------------------------------------
+
+class TestAoISetOps:
+
+    # --- Helpers ---
+
+    @pytest.fixture
+    def europe(self):
+        return AoI.from_region(lat_min_deg=35, lat_max_deg=72,
+                                lon_min_deg=-10, lon_max_deg=40)
+
+    @pytest.fixture
+    def north_europe(self):
+        return AoI.from_region(lat_min_deg=55, lat_max_deg=72,
+                                lon_min_deg=-10, lon_max_deg=40)
+
+    @pytest.fixture
+    def australia(self):
+        return AoI.from_region(lat_min_deg=-40, lat_max_deg=-10,
+                                lon_min_deg=113, lon_max_deg=154)
+
+    # --- Union ---
+
+    def test_union_returns_aoi(self, europe, australia):
+        result = europe | australia
+        assert isinstance(result, AoI)
+
+    def test_union_is_lazy(self, europe, australia):
+        result = europe | australia
+        assert result._lat is None
+
+    def test_union_geometry(self, europe, australia):
+        result = europe | australia
+        assert result.geometry is not None
+        assert not result.geometry.is_empty
+
+    def test_union_has_more_points(self, europe, australia):
+        result = europe | australia
+        assert len(result) >= len(europe)
+
+    # --- Intersection ---
+
+    def test_intersection_returns_aoi(self, europe, north_europe):
+        result = europe & north_europe
+        assert isinstance(result, AoI)
+
+    def test_intersection_is_lazy(self, europe, north_europe):
+        result = europe & north_europe
+        assert result._lat is None
+
+    def test_intersection_geometry(self, europe, north_europe):
+        result = europe & north_europe
+        assert not result.geometry.is_empty
+
+    def test_intersection_smaller_than_input(self, europe, north_europe):
+        result = europe & north_europe
+        assert len(result) < len(europe)
+
+    # --- Difference ---
+
+    def test_difference_returns_aoi(self, europe, north_europe):
+        result = europe - north_europe
+        assert isinstance(result, AoI)
+
+    def test_difference_is_lazy(self, europe, north_europe):
+        result = europe - north_europe
+        assert result._lat is None
+
+    def test_difference_geometry(self, europe, north_europe):
+        result = europe - north_europe
+        assert not result.geometry.is_empty
+
+    def test_difference_smaller_than_input(self, europe, north_europe):
+        result = europe - north_europe
+        assert len(result) < len(europe)
+        assert len(result) > 0
+
+    # --- Symmetric difference ---
+
+    def test_symmetric_difference_returns_aoi(self, europe, north_europe):
+        result = europe ^ north_europe
+        assert isinstance(result, AoI)
+
+    def test_symmetric_difference_geometry(self, europe, north_europe):
+        result = europe ^ north_europe
+        assert not result.geometry.is_empty
+
+    # --- Chained operations ---
+
+    def test_chained_difference(self):
+        """Mirrors the CONUS example from the docstring."""
+        us = AoI.from_geography('US')
+        ak = AoI.from_geography('US-AK')
+        hi = AoI.from_geography('US-HI')
+        conus = us - ak - hi
+        assert isinstance(conus, AoI)
+        assert conus._lat is None          # still lazy
+        assert len(conus) > 0
+        assert len(conus) < len(us)
+
+    def test_intersection_with_region(self):
+        """Mirrors the Canadian Arctic example from the docstring."""
+        can = AoI.from_geography('Canada')
+        arctic_band = AoI.from_region(lat_min_deg=66)
+        can_arctic = can & arctic_band
+        assert isinstance(can_arctic, AoI)
+        assert len(can_arctic) > 0
+        assert len(can_arctic) < len(can)
+
+    # --- Empty intersection ---
+
+    def test_empty_intersection_gives_zero_len(self, europe, australia):
+        empty = europe & australia
+        assert isinstance(empty, AoI)
+        assert len(empty) == 0
+        assert empty.geometry.is_empty
+
+    def test_empty_intersection_arrays_are_empty(self, europe, australia):
+        empty = europe & australia
+        assert len(empty.lat_rad) == 0
+        assert len(empty.lon_rad) == 0
+
+    # --- Density inheritance ---
+
+    def test_density_from_first_operand(self):
+        a = AoI.from_region(lat_min_deg=0, lat_max_deg=30,
+                             lon_min_deg=0, lon_max_deg=30, point_density=1e4)
+        b = AoI.from_region(lat_min_deg=10, lat_max_deg=40,
+                             lon_min_deg=10, lon_max_deg=40, point_density=9e4)
+        result = a | b
+        assert result._point_density_m2 == a._point_density_m2
+
+    # --- TypeError for geometry-less AoI ---
+
+    def test_set_op_requires_geometry_lhs(self):
+        eager = AoI(_LAT_DEG, _LON_DEG)
+        geom = AoI.from_region(lat_min_deg=-10, lat_max_deg=10)
+        with pytest.raises(TypeError, match='geometry'):
+            _ = eager | geom
+
+    def test_set_op_requires_geometry_rhs(self):
+        eager = AoI(_LAT_DEG, _LON_DEG)
+        geom = AoI.from_region(lat_min_deg=-10, lat_max_deg=10)
+        with pytest.raises(TypeError, match='geometry'):
+            _ = geom | eager

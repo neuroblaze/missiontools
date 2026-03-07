@@ -1178,7 +1178,7 @@ def load_shapefile_geometry(path, feature_index):
     return geom, crosses_am
 
 
-def _sample_from_geom(
+def sample_from_geometry(
         geom,
         crosses_am: bool,
         point_density: float,
@@ -1283,7 +1283,7 @@ def sample_shapefile(
         raise ValueError(f"point_density must be positive, got {point_density}")
 
     geom, crosses_am = load_shapefile_geometry(path, feature_index)
-    return _sample_from_geom(geom, crosses_am, point_density)
+    return sample_from_geometry(geom, crosses_am, point_density)
 
 
 # ---------------------------------------------------------------------------
@@ -1476,5 +1476,31 @@ def sample_geography(
 
     path, indices = _find_ne_indices(geography)
     geom, crosses_am = _load_ne_features(path, indices)
-    lat, lon = _sample_from_geom(geom, crosses_am, point_density)
+    lat, lon = sample_from_geometry(geom, crosses_am, point_density)
     return lat, lon, geom
+
+
+def geography_geometry(geography: str) -> tuple[object, bool]:
+    """Return the Shapely geometry for a Natural Earth geography without sampling.
+
+    Parameters
+    ----------
+    geography : str
+        Same format as :func:`sample_geography` — country name, ISO code,
+        ``'Country/Subdivision'``, or ISO 3166-2 code.
+
+    Returns
+    -------
+    geom : shapely Polygon or MultiPolygon
+        Geometry in geographic degrees.  May use extended longitudes
+        (> 180°) for antimeridian-crossing features (e.g. Russia).
+    crosses_am : bool
+        True if the geometry uses unwrapped longitude coordinates.
+
+    Raises
+    ------
+    ValueError
+        If ``geography`` does not match any bundled feature.
+    """
+    path, indices = _find_ne_indices(geography)
+    return _load_ne_features(path, indices)
