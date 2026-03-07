@@ -17,6 +17,7 @@ import numpy as np
 import numpy.typing as npt
 
 from ..orbit.frames import ecef_to_eci, lvlh_to_eci, azel_to_enu, enu_to_ecef
+from ..orbit.constants import EARTH_MEAN_RADIUS
 from ..sensor import _euler_zyx_to_boresight
 
 
@@ -394,6 +395,211 @@ class SymmetricAntenna(AbstractAntenna):
     def gains_dbi(self) -> npt.NDArray[np.floating]:
         """Tabulated gain values (dBi)."""
         return self._gains_dbi.copy()
+
+    # --- factory classmethods ---
+
+    @classmethod
+    def from_isoflux(
+        cls,
+        altitude_km: float,
+        min_elev_deg: float = 5.0,
+        edge_gain: float | None = None,
+        central_body_radius: float = EARTH_MEAN_RADIUS,
+        **kwargs,
+    ) -> 'SymmetricAntenna':
+        """Isoflux antenna pattern for a fixed nadir-pointing orbit altitude.
+
+        Shapes the beam so that power flux density at the spherical body
+        surface is constant across the coverage footprint.  The gain
+        increases from boresight (nadir) toward the edge of coverage to
+        compensate for the increasing slant range.
+
+        Parameters
+        ----------
+        altitude_km : float
+            Orbital altitude above the body surface (km).
+        min_elev_deg : float, optional
+            Minimum surface elevation angle defining the coverage edge (deg).
+            Default 5.0°.
+        edge_gain : float or None, optional
+            Desired gain at the edge of coverage (dBi).  If *None* (default),
+            the boresight gain is derived from the constraint that the
+            total antenna directivity equals unity (0 dBi on average),
+            assuming zero radiation beyond the coverage zone.
+        central_body_radius : float, optional
+            Mean radius of the central body (m).  Defaults to
+            ``EARTH_MEAN_RADIUS``.
+        **kwargs
+            Mounting keyword arguments forwarded to :class:`SymmetricAntenna`.
+        """
+        h = float(altitude_km) * 1e3
+        R = float(central_body_radius)
+        d = R + h
+
+        el_min_rad = np.radians(float(min_elev_deg))
+        theta_max = np.arcsin(np.clip((R / d) * np.cos(el_min_rad), -1.0, 1.0))
+
+        # Slant range at each off-nadir angle
+        n_main = 200
+        thetas = np.linspace(0.0, theta_max, n_main)
+        ranges = d * np.cos(thetas) - np.sqrt(np.maximum(0.0, R**2 - d**2 * np.sin(thetas)**2))
+
+        # Relative gain shape (dB), normalised to boresight = 0
+        gain_shape_db = 20.0 * np.log10(ranges / h)
+
+        if edge_gain is not None:
+            # Back-compute boresight gain from specified edge gain
+            g0 = float(edge_gain) - gain_shape_db[-1]
+        else:
+            # Unity directivity: D₀ = 2 / ∫₀^θ_max [(r/h)² · sin(θ)] dθ
+            integrand = (ranges / h) ** 2 * np.sin(thetas)
+            integral = np.trapezoid(integrand, thetas)
+            g0 = 10.0 * np.log10(2.0 / integral)
+
+        gains_main = g0 + gain_shape_db
+        computed_edge = float(gains_main[-1])
+
+        # Immediate rolloff just beyond θ_max so np.interp doesn't clamp to
+        # the edge gain for out-of-coverage angles.  Use a tiny 0.01° step to
+        # keep the linear transition zone negligibly small.
+        rolloff_angle = min(theta_max + np.radians(0.01), np.radians(90.0))
+        angles_out = np.concatenate([thetas, [rolloff_angle, np.radians(90.0)]])
+        gains_out = np.concatenate([gains_main, [-60.0, -60.0]])
+
+        # Remove duplicate angles (e.g. when theta_max is already near 90°)
+        _, unique_idx = np.unique(angles_out, return_index=True)
+        angles_out = angles_out[unique_idx]
+        gains_out = gains_out[unique_idx]
+
+        return cls(np.degrees(angles_out), gains_out, **kwargs)
+
+    @classmethod
+    def from_gaussian(
+        cls,
+        gain_dbi: float,
+        **kwargs,
+    ) -> 'SymmetricAntenna':
+        """Ideal Gaussian beam pattern with automatically scaled beamwidth.
+
+        The half-power beamwidth is derived from the normalisation condition
+        that total directivity equals *gain_dbi* (i.e. the Gaussian integral
+        over the full sphere gives the correct peak value).
+
+        Parameters
+        ----------
+        gain_dbi : float
+            Peak gain at boresight (dBi).
+        **kwargs
+            Mounting keyword arguments forwarded to :class:`SymmetricAntenna`.
+        """
+        from scipy.optimize import brentq
+
+        gain_dbi = float(gain_dbi)
+        if gain_dbi <= 0.0:
+            raise ValueError(
+                f"gain_dbi must be positive for a Gaussian beam (got {gain_dbi}). "
+                "A Gaussian pattern always has peak directivity > 0 dBi; "
+                "use IsotropicAntenna for gain_dbi ≤ 0."
+            )
+
+        D = 10.0 ** (gain_dbi / 10.0)  # linear directivity
+
+        def _residual(sigma: float) -> float:
+            # D = 2 / ∫₀^π exp(−θ²/(2σ²)) · sin(θ) dθ
+            th = np.linspace(0.0, np.pi, 4000)
+            integ = np.trapezoid(np.exp(-th**2 / (2.0 * sigma**2)) * np.sin(th), th)
+            return 2.0 / integ - D
+
+        sigma = brentq(_residual, 1e-4, 50.0)
+
+        # Angle at which gain drops to −60 dBi
+        theta_cutoff = sigma * np.sqrt(2.0 * (float(gain_dbi) + 60.0) * np.log(10.0) / 10.0)
+        theta_cutoff = min(theta_cutoff, np.pi / 2.0)
+
+        thetas = np.linspace(0.0, theta_cutoff, 500)
+        gains = float(gain_dbi) + 10.0 * np.log10(
+            np.maximum(np.exp(-thetas**2 / (2.0 * sigma**2)), 1e-20)
+        )
+        # Append a far-field point at 180° to cover the full back hemisphere
+        angles_out = np.append(np.degrees(thetas), 180.0)
+        gains_out = np.append(gains, -60.0)
+
+        return cls(angles_out, gains_out, **kwargs)
+
+    @classmethod
+    def from_parabolic(
+        cls,
+        diameter: float,
+        frequency: float,
+        eff: float = 0.6,
+        envelope: bool = False,
+        **kwargs,
+    ) -> 'SymmetricAntenna':
+        """Uniformly illuminated parabolic reflector antenna pattern.
+
+        Parameters
+        ----------
+        diameter : float
+            Reflector diameter (m).
+        frequency : float
+            Centre frequency (Hz).
+        eff : float, optional
+            Antenna efficiency (dimensionless, 0 < eff ≤ 1).  Accounts for
+            spillover, blockage, surface errors, etc.  Default 0.6.
+        envelope : bool, optional
+            If *False* (default), the full pattern including sidelobes is
+            returned.  If *True*, the sidelobe envelope is used: the main
+            lobe is exact and sidelobes beyond the first null are replaced
+            by the asymptotic envelope
+            ``f_env(u) = 8 / (π · u³)``
+            derived from the large-argument approximation
+            ``J₁(u) ~ √(2/(πu)) · cos(u − 3π/4)``.
+        **kwargs
+            Mounting keyword arguments forwarded to :class:`SymmetricAntenna`.
+        """
+        from scipy.special import j1
+
+        _C = 299_792_458.0
+        lam = _C / float(frequency)
+        D = float(diameter)
+        eta = float(eff)
+
+        g_peak_lin = eta * (np.pi * D / lam) ** 2
+        g_peak_dbi = 10.0 * np.log10(g_peak_lin)
+
+        # Adaptive sampling: ≥20 points per first-null width
+        sin_null = min(1.0, 1.22 * lam / D)
+        theta_null = np.arcsin(sin_null)
+        n_pts = max(500, int(np.ceil((np.pi / 2.0) / (theta_null / 20.0))))
+
+        thetas = np.linspace(0.0, np.pi / 2.0, n_pts)
+        u = np.pi * D * np.sin(thetas) / lam
+
+        # [2 J₁(u)/u]²  with limit 1 at u=0
+        u_safe = np.where(u < 1e-12, 1e-12, u)
+        j1u = np.where(u < 1e-12, 1.0, 2.0 * j1(u_safe) / u_safe)
+        f = j1u ** 2
+
+        if envelope:
+            # Beyond the first zero of J₁ (u ≈ 3.8317), replace with asymptotic envelope
+            first_zero = 3.8317
+            beyond = u > first_zero
+            f_env = np.where(u > 0, 8.0 / (np.pi * np.maximum(u, 1e-30) ** 3), 1.0)
+            f = np.where(beyond, f_env, f)
+
+        g_lin = g_peak_lin * f
+        gains = np.maximum(10.0 * np.log10(np.maximum(g_lin, 1e-20)), -60.0)
+
+        # Extend to 180° with low gain (dish back-lobe region)
+        angles_out = np.concatenate([np.degrees(thetas), [90.0, 180.0]])
+        gains_out = np.concatenate([gains, [-60.0, -60.0]])
+
+        # Remove duplicates at 90°
+        _, unique_idx = np.unique(angles_out, return_index=True)
+        angles_out = angles_out[unique_idx]
+        gains_out = gains_out[unique_idx]
+
+        return cls(angles_out, gains_out, **kwargs)
 
     def _pattern_gain(
         self,

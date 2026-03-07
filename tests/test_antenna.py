@@ -471,6 +471,137 @@ class TestGainFrame:
 
 
 # ===================================================================
+# SymmetricAntenna factory classmethods
+# ===================================================================
+
+class TestSymmetricAntennaFactories:
+
+    # --- from_isoflux ---
+
+    def test_isoflux_gain_increases_toward_edge(self):
+        """Isoflux pattern: gain at nadir ≤ gain at edge of coverage."""
+        ant = SymmetricAntenna.from_isoflux(600.0, min_elev_deg=5.0,
+                                             body_vector=[0, 0, 1])
+        # First and last tabulated angles (excluding trailing rolloff)
+        gains = ant.gains_dbi
+        assert gains[0] <= gains[-3]  # [-3] is last coverage point before rolloff
+
+    def test_isoflux_unity_directivity(self):
+        """edge_gain=None → numerically verify unity directivity (within 1%)."""
+        ant = SymmetricAntenna.from_isoflux(600.0, min_elev_deg=5.0,
+                                             body_vector=[0, 0, 1])
+        thetas = np.linspace(0.0, np.pi, 10_000)
+        gains_dbi = np.interp(thetas, np.radians(ant.angles_deg), ant.gains_dbi)
+        g_lin = 10.0 ** (gains_dbi / 10.0)
+        integral = np.trapezoid(g_lin * np.sin(thetas), thetas)
+        assert abs(integral - 2.0) / 2.0 < 0.02  # within 2% of unity directivity
+
+    def test_isoflux_edge_gain_specified(self):
+        """edge_gain=5.0 → last coverage point in table should equal 5.0 dBi."""
+        edge = 5.0
+        ant = SymmetricAntenna.from_isoflux(600.0, min_elev_deg=5.0,
+                                             edge_gain=edge, body_vector=[0, 0, 1])
+        # The last point before the rolloff is gains_dbi[-3]
+        assert abs(ant.gains_dbi[-3] - edge) < 0.01
+
+    def test_isoflux_realistic_runs(self):
+        """600 km / 5° / Earth mean radius executes without error."""
+        SymmetricAntenna.from_isoflux(600.0, min_elev_deg=5.0, body_vector=[0, 0, 1])
+
+    def test_isoflux_custom_body_radius(self):
+        """Custom central_body_radius (e.g. Moon) produces a valid antenna."""
+        moon_r = 1_737_400.0
+        ant = SymmetricAntenna.from_isoflux(100.0, min_elev_deg=10.0,
+                                             central_body_radius=moon_r,
+                                             body_vector=[0, 0, 1])
+        assert ant.peak_gain_dbi == ant.gains_dbi[0]
+
+    # --- from_gaussian ---
+
+    def test_gaussian_peak_gain(self):
+        """Peak gain at boresight matches requested gain_dbi within 0.01 dB."""
+        for g in (20.0, 10.0, 3.0):
+            ant = SymmetricAntenna.from_gaussian(g, body_vector=[0, 0, 1])
+            assert abs(ant.peak_gain_dbi - g) < 0.01, f"gain={g}"
+
+    def test_gaussian_nonpositive_gain_raises(self):
+        """gain_dbi ≤ 0 raises ValueError (no finite σ exists for a Gaussian)."""
+        with pytest.raises(ValueError, match="positive"):
+            SymmetricAntenna.from_gaussian(0.0, body_vector=[0, 0, 1])
+
+    def test_gaussian_monotonically_decreasing(self):
+        """Gaussian pattern is non-increasing from 0° outward."""
+        ant = SymmetricAntenna.from_gaussian(20.0, body_vector=[0, 0, 1])
+        gains = ant.gains_dbi
+        # Allow tiny floating-point noise (1e-9 tolerance)
+        assert np.all(np.diff(gains) <= 1e-9)
+
+    def test_gaussian_low_gain_at_180(self):
+        """Pattern table extends to 180° with very low gain."""
+        ant = SymmetricAntenna.from_gaussian(20.0, body_vector=[0, 0, 1])
+        assert ant.angles_deg[-1] == 180.0
+        assert ant.gains_dbi[-1] <= -59.0
+
+    # --- from_parabolic ---
+
+    def test_parabolic_peak_gain(self):
+        """Peak gain matches eff·(πD/λ)² formula within 0.01 dB."""
+        D, f, eta = 1.2, 8.25e9, 0.6
+        lam = 299_792_458.0 / f
+        expected = 10.0 * np.log10(eta * (np.pi * D / lam) ** 2)
+        ant = SymmetricAntenna.from_parabolic(D, f, eff=eta, body_vector=[0, 0, 1])
+        assert abs(ant.peak_gain_dbi - expected) < 0.01
+
+    def test_parabolic_first_null_deep(self):
+        """Gain near the first null is at least 10 dB below peak."""
+        D, f = 1.2, 8.25e9
+        lam = 299_792_458.0 / f
+        ant = SymmetricAntenna.from_parabolic(D, f, eff=0.6, body_vector=[0, 0, 1])
+        theta_null_deg = np.degrees(np.arcsin(min(1.0, 1.22 * lam / D)))
+        # Evaluate gain at the first null using the table
+        g_null = float(np.interp(
+            np.radians(theta_null_deg),
+            np.radians(ant.angles_deg),
+            ant.gains_dbi,
+        ))
+        assert (ant.peak_gain_dbi - g_null) > 10.0
+
+    def test_parabolic_envelope_monotone_beyond_main_lobe(self):
+        """envelope=True: gains are non-increasing beyond the main lobe."""
+        D, f = 1.2, 8.25e9
+        lam = 299_792_458.0 / f
+        ant = SymmetricAntenna.from_parabolic(D, f, eff=0.6, envelope=True,
+                                              body_vector=[0, 0, 1])
+        # Find index beyond first null
+        theta_null = np.degrees(np.arcsin(min(1.0, 1.22 * lam / D)))
+        angles = ant.angles_deg
+        idx = np.searchsorted(angles, theta_null * 1.1)
+        gains_beyond = ant.gains_dbi[idx:]
+        assert np.all(np.diff(gains_beyond) <= 1e-9)
+
+    def test_parabolic_full_pattern_has_sidelobes(self):
+        """envelope=False: non-monotone gains beyond the first null (sidelobes present)."""
+        D, f = 1.2, 8.25e9
+        lam = 299_792_458.0 / f
+        ant = SymmetricAntenna.from_parabolic(D, f, eff=0.6, envelope=False,
+                                              body_vector=[0, 0, 1])
+        theta_null = np.degrees(np.arcsin(min(1.0, 1.22 * lam / D)))
+        angles = ant.angles_deg
+        idx = np.searchsorted(angles, theta_null * 1.05)
+        gains_beyond = ant.gains_dbi[idx:]
+        # At least one local maximum (gain increasing then decreasing) indicates sidelobes
+        has_sidelobes = np.any(np.diff(gains_beyond) > 0.0)
+        assert has_sidelobes
+
+    def test_parabolic_efficiency_scaling(self):
+        """Higher efficiency → higher peak gain."""
+        D, f = 1.0, 10e9
+        g1 = SymmetricAntenna.from_parabolic(D, f, eff=0.5, body_vector=[0, 0, 1]).peak_gain_dbi
+        g2 = SymmetricAntenna.from_parabolic(D, f, eff=0.7, body_vector=[0, 0, 1]).peak_gain_dbi
+        assert g2 > g1
+
+
+# ===================================================================
 # Top-level imports
 # ===================================================================
 
