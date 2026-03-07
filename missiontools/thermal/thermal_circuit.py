@@ -509,6 +509,7 @@ class ThermalCircuit:
             raise RuntimeError("Circuit has no capacitance nodes.")
 
         node_names, C_vec, G, Q_src, _, _, T0 = self._build_system()
+        Q_src = Q_src.copy()
         n = len(node_names)
         G_sum = G.sum(axis=1)
 

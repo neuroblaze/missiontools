@@ -49,9 +49,16 @@ metres, consistent with the package-wide SI convention.
 from .coverage import (sample_aoi, sample_region, sample_shapefile,
                        sample_geography,
                        coverage_fraction, revisit_time, pointwise_coverage,
-                       access_pointwise, revisit_pointwise)
+                       access_pointwise, revisit_pointwise,
+                       make_sensor_spec, coverage_fraction_multi,
+                       pointwise_coverage_multi,
+                       collect_access_intervals_multi,
+                       load_shapefile_geometry)
 
 __all__ = ['sample_aoi', 'sample_region', 'sample_shapefile',
            'sample_geography',
            'coverage_fraction', 'revisit_time', 'pointwise_coverage',
-           'access_pointwise', 'revisit_pointwise']
+           'access_pointwise', 'revisit_pointwise',
+           'make_sensor_spec', 'coverage_fraction_multi',
+           'pointwise_coverage_multi', 'collect_access_intervals_multi',
+           'load_shapefile_geometry']

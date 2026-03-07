@@ -84,7 +84,7 @@ def _parse_constraints(
     return use_fov, pointing_lvlh_norm, cos_fov, use_sza, cos_sza_max_, cos_sza_min_
 
 
-def _make_sensor_spec(
+def make_sensor_spec(
         keplerian_params:  dict,
         propagator_type:   str,
         fov_pointing_lvlh: npt.NDArray | None,
@@ -257,7 +257,7 @@ def _detect_transitions(
     return [(all_t[k], int(all_m[k]), bool(all_r[k])) for k in order]
 
 
-def _collect_access_intervals_multi(
+def collect_access_intervals_multi(
         lat:          npt.NDArray,
         lon:          npt.NDArray,
         sensor_specs: list,
@@ -352,18 +352,18 @@ def _collect_access_intervals(
 ) -> list[list[tuple[np.datetime64, np.datetime64]]]:
     """Collect per-point ``(AOS, LOS)`` ``datetime64[us]`` interval pairs (single sensor).
 
-    Delegates to :func:`_collect_access_intervals_multi` with a one-element
+    Delegates to :func:`collect_access_intervals_multi` with a one-element
     sensor spec list.
     """
-    spec = _make_sensor_spec(keplerian_params, propagator_type,
+    spec = make_sensor_spec(keplerian_params, propagator_type,
                              fov_pointing_lvlh, fov_half_angle)
-    return _collect_access_intervals_multi(
+    return collect_access_intervals_multi(
         lat, lon, [spec], t_start, t_end, alt, el_min,
         sza_max, sza_min, max_step, batch_size, close_at_end=close_at_end,
     )
 
 
-def _coverage_fraction_multi(
+def coverage_fraction_multi(
         lat:          npt.NDArray,
         lon:          npt.NDArray,
         sensor_specs: list,
@@ -432,7 +432,7 @@ def _coverage_fraction_multi(
     }
 
 
-def _pointwise_coverage_multi(
+def pointwise_coverage_multi(
         lat:          npt.NDArray,
         lon:          npt.NDArray,
         sensor_specs: list,
@@ -756,9 +756,9 @@ def coverage_fraction(
 
         ``final_cumulative`` : float — fraction of points covered ≥ once.
     """
-    spec = _make_sensor_spec(keplerian_params, propagator_type,
+    spec = make_sensor_spec(keplerian_params, propagator_type,
                              fov_pointing_lvlh, fov_half_angle)
-    return _coverage_fraction_multi(
+    return coverage_fraction_multi(
         lat, lon, [spec], t_start, t_end,
         alt, el_min, sza_max, sza_min, max_step, batch_size,
     )
@@ -929,9 +929,9 @@ def pointwise_coverage(
     Prefer :func:`coverage_fraction` or :func:`revisit_time` for summary
     statistics over large grids.
     """
-    spec = _make_sensor_spec(keplerian_params, propagator_type,
+    spec = make_sensor_spec(keplerian_params, propagator_type,
                              fov_pointing_lvlh, fov_half_angle)
-    return _pointwise_coverage_multi(
+    return pointwise_coverage_multi(
         lat, lon, [spec], t_start, t_end,
         alt, el_min, sza_max, sza_min, max_step, batch_size,
     )
@@ -1114,7 +1114,7 @@ def _unwrap_ring(coords: list) -> tuple[list, bool]:
     return list(zip(lons_u, lats)), crosses
 
 
-def _load_shapefile(path, feature_index):
+def load_shapefile_geometry(path, feature_index):
     """Read an ESRI Shapefile and return a shapely geometry.
 
     Returns
@@ -1282,7 +1282,7 @@ def sample_shapefile(
     if point_density <= 0:
         raise ValueError(f"point_density must be positive, got {point_density}")
 
-    geom, crosses_am = _load_shapefile(path, feature_index)
+    geom, crosses_am = load_shapefile_geometry(path, feature_index)
     return _sample_from_geom(geom, crosses_am, point_density)
 
 
@@ -1313,7 +1313,7 @@ def _load_ne_features(
     geoms: list = []
     crosses_am = False
     for i in indices:
-        g, cam = _load_shapefile(path, i)
+        g, cam = load_shapefile_geometry(path, i)
         geoms.append(g)
         crosses_am = crosses_am or cam
 

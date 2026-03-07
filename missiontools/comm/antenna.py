@@ -94,6 +94,10 @@ class AbstractAntenna(ABC):
                 raise ValueError(
                     "elevation_deg is required for ground station mounting."
                 )
+            if not -90.0 <= float(elevation_deg) <= 90.0:
+                raise ValueError(
+                    f"elevation_deg must be in [-90, 90], got {elevation_deg}"
+                )
             self._mode = 'ground'
             az_rad = np.radians(float(azimuth_deg))
             el_rad = np.radians(float(elevation_deg))
@@ -348,6 +352,15 @@ class SymmetricAntenna(AbstractAntenna):
         Gain at each angle (dBi).
     **kwargs
         Mounting keyword arguments passed to :class:`AbstractAntenna`.
+
+    Notes
+    -----
+    Gain values are linearly interpolated using ``numpy.interp``, which
+    **clamps** angles outside the tabulated range to the nearest endpoint
+    value.  If the table only covers ``[0°, 90°]``, angles beyond 90° will
+    return the gain at 90° rather than a lower back-hemisphere value, which
+    may overstate gain in that region.  Extend the table to 180° (e.g. with
+    a low back-lobe gain) to avoid this clamping.
     """
 
     def __init__(

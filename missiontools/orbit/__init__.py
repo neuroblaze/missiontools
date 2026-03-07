@@ -78,7 +78,6 @@ __all__ = [
     'geostationary_orbit', 'highly_elliptical_orbit',
     'gmst', 'eci_to_ecef', 'ecef_to_eci', 'geodetic_to_ecef',
     'eci_to_lvlh', 'lvlh_to_eci', 'sun_vec_eci',
-    'azel_to_enu', 'enu_to_ecef',
     'earth_access', 'earth_access_intervals',
     'space_to_space_access', 'space_to_space_access_intervals',
     'in_sunlight',

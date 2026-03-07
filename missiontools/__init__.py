@@ -65,6 +65,15 @@ Classes
     Abstract base class for solar power models.
 :class:`NormalVectorSolarConfig`
     Concrete solar config defined by panel normal vectors and areas.
+:class:`ThermalCircuit`
+    Lumped-parameter thermal network for transient and steady-state analysis.
+:class:`NormalVectorThermalConfig`
+    Surface thermal config defined by face normal vectors, areas,
+    emissivities, and absorptivities.
+:class:`ThermalResult`
+    Container for thermal simulation results (node temperature histories).
+:class:`AbstractThermalConfig`
+    Base class for surface thermal configurations.
 
 Conventions
 -----------
@@ -85,12 +94,20 @@ Submodules
 :mod:`~missiontools.comm`
     Antenna gain and link budget analysis.
 :mod:`~missiontools.thermal`
-    Thermal analysis *(planned)*.
+    Thermal analysis: lumped-parameter networks and surface thermal models.
 :mod:`~missiontools.radiation`
     Radiation environment *(planned)*.
 """
 
 __version__ = "0.1.0"
+
+__all__ = [
+    'Spacecraft', 'Sensor', 'AttitudeLaw', 'GroundStation', 'AoI', 'Coverage',
+    'AbstractSolarConfig', 'NormalVectorSolarConfig',
+    'ThermalCircuit', 'ThermalResult', 'AbstractThermalConfig', 'NormalVectorThermalConfig',
+    'IsotropicAntenna', 'SymmetricAntenna', 'Link',
+    'clear_cache', 'set_cache_limit', 'cache_info',
+]
 
 from .spacecraft import Spacecraft
 from .attitude import AttitudeLaw
@@ -99,6 +116,7 @@ from .aoi import AoI
 from .sensor import Sensor
 from .coverage_analysis import Coverage
 from .power import AbstractSolarConfig, NormalVectorSolarConfig
-from .thermal import ThermalCircuit, NormalVectorThermalConfig
+from .thermal import (ThermalCircuit, ThermalResult,
+                      AbstractThermalConfig, NormalVectorThermalConfig)
 from .comm import IsotropicAntenna, SymmetricAntenna, Link
 from .cache import clear_cache, set_cache_limit, cache_info

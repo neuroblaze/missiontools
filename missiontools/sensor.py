@@ -53,8 +53,8 @@ def _euler_zyx_to_boresight(
 class Sensor:
     """An instrument attached to a spacecraft with a cone-shaped field of view.
 
-    Do not construct directly — use the keyword arguments to select the
-    pointing mode.
+    Prefer the keyword arguments to select the pointing mode (see below).
+    The constructor is public and may be called directly when needed.
 
     Parameters
     ----------
@@ -171,6 +171,11 @@ class Sensor:
     def half_angle_rad(self) -> float:
         """FOV cone half-angle in radians."""
         return self._half_angle_rad
+
+    @property
+    def half_angle_deg(self) -> float:
+        """FOV cone half-angle in degrees."""
+        return float(np.degrees(self._half_angle_rad))
 
     @property
     def spacecraft(self):

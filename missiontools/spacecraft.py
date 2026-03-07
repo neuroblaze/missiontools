@@ -43,6 +43,13 @@ class Spacecraft:
     central_body_radius : float, optional
         Equatorial radius (m).  Defaults to Earth WGS84.
 
+    Notes
+    -----
+    The dataclass-generated ``__eq__`` compares only the declared fields
+    (orbital elements, epoch, propagator type, and central body parameters).
+    Two ``Spacecraft`` instances with identical orbital elements but different
+    attached sensors or antennas will still compare as equal.
+
     Examples
     --------
     Construct directly::

@@ -92,6 +92,16 @@ class AoI:
     # ------------------------------------------------------------------
 
     @classmethod
+    def _from_radians(cls, lat_rad: npt.NDArray, lon_rad: npt.NDArray) -> 'AoI':
+        """Construct directly from radian arrays, skipping the deg→rad conversion."""
+        obj = object.__new__(cls)
+        obj._lat = np.asarray(lat_rad, dtype=np.float64)
+        obj._lon = np.asarray(lon_rad, dtype=np.float64)
+        obj._geometry = None
+        obj._shapefile_path = None
+        return obj
+
+    @classmethod
     def from_region(
             cls,
             lat_min_deg: float | None = None,
@@ -134,7 +144,7 @@ class AoI:
             _r(lon_min_deg), _r(lon_max_deg),
             point_density,
         )
-        return cls(np.degrees(lat_rad), np.degrees(lon_rad))
+        return cls._from_radians(lat_rad, lon_rad)
 
     @classmethod
     def from_shapefile(
@@ -165,14 +175,14 @@ class AoI:
             With :attr:`geometry` and :attr:`shapefile_path` populated.
         """
         from .coverage import sample_shapefile
-        from .coverage.coverage import _load_shapefile
+        from .coverage import load_shapefile_geometry
 
         lat_rad, lon_rad = sample_shapefile(
             path, feature_index=feature_index, point_density=point_density,
         )
-        geom, _ = _load_shapefile(path, feature_index)
+        geom, _ = load_shapefile_geometry(path, feature_index)
 
-        obj = cls(np.degrees(lat_rad), np.degrees(lon_rad))
+        obj = cls._from_radians(lat_rad, lon_rad)
         obj._geometry = geom
         obj._shapefile_path = str(path)
         return obj
@@ -211,6 +221,6 @@ class AoI:
         lat_rad, lon_rad, geom = sample_geography(
             geography, point_density=point_density,
         )
-        obj = cls(np.degrees(lat_rad), np.degrees(lon_rad))
+        obj = cls._from_radians(lat_rad, lon_rad)
         obj._geometry = geom
         return obj
