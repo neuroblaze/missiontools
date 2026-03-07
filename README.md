@@ -6,7 +6,9 @@
 
 **Check out the [examples folder](examples/) to see what you can do with `missiontools`**
 
-It currently supports:
+## Features
+
+`missiontools` currently supports:
  - Analytical propagation using either Keplerian two-body or J2 with secular perturbations.
  - Convenience functions for generating sun-synchronous, geostationary, and highly elliptical orbits.
  - Access interval computation (spacecraft to ground station, spacecraft to spacecraft)
@@ -14,17 +16,33 @@ It currently supports:
  - Convenience functions for creation of AoIs by country or state/province (eg: `AoI.from_geography('Canada/British Columbia')`). Uses the [Natural Earth](https://www.naturalearthdata.com) 1:50m dataset.
  - Computation of space-to-ground coverage including constraints on spacecraft elevation, solar zenith angle (SZA), and field-of-view.
  - Selectable spacecraft attitude laws: fixed (choice of frame: LVLH, ECI, ECEF), targeted
- - Solar generation and orbit average power
  - Solar panel definition from panel normals and areas
+ - Solar generation and orbit average power
+ - Yaw steering for maximum solar generation
+ - Thermal analysis: faces/normals connected to lumped element thermal model
+ - Antenna modeling (isotropic, radially symmetric), including antenna pointing modes
+ - Dynamic link budget computation including ITU-R P.618 weather effects (using [ITU-RPy](https://itu-rpy.readthedocs.io/en/latest/)).
  
- Planned Features:
- - Basic thermal analysis: faces/normals connected to lumped element thermal model
+ Possible future features (open an issue if you'd like to see one of these implemented):
  - CAD import for solar & thermal
  - Self-shadowing for solar/thermal imported from CAD
- - Communications system modeling including statistical weather effects and variable rate modulation
-
-Possible features:
+ - Radiative thermal coupling between surface elements imported from CAD
+ - Variable-rate communications
  - Radiation environment definition
+
+## Dependencies
+ - Python 3.13 or later
+ - numpy
+ - scipy
+ - matplotlib
+ - skyfield
+ - pyshp
+ - shapely
+ - itur
+
+## Validation
+
+This project is in early days and is not yet well validated. Do not depend on the outputs for any critical design decisions. If an output looks off, it probably is - please open an issue!
 
 ## Vibe Coding Disclaimer
 
