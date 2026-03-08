@@ -1,17 +1,18 @@
-PDOC = python -m pdoc
-PDOC_FLAGS = -d numpy --math --footer-text "missiontools v0.1.0"
-DOCS_DIR = docs
+SPHINX_BUILD  = sphinx-build
+SPHINX_AUTO   = sphinx-autobuild
+SPHINX_SOURCE = docs/source
+SPHINX_OUT    = docs/_build/html
 
 .PHONY: docs docs-serve clean-docs
 
-## Generate HTML documentation into docs/
+## Generate HTML documentation into docs/_build/html/
 docs:
-	$(PDOC) missiontools $(PDOC_FLAGS) -o $(DOCS_DIR)/
+	$(SPHINX_BUILD) -b html $(SPHINX_SOURCE) $(SPHINX_OUT)
 
-## Live-preview documentation in the browser
+## Live-preview documentation in the browser (auto-rebuild on changes)
 docs-serve:
-	$(PDOC) missiontools $(PDOC_FLAGS)
+	$(SPHINX_AUTO) $(SPHINX_SOURCE) $(SPHINX_OUT)
 
 ## Remove generated documentation
 clean-docs:
-	rm -rf $(DOCS_DIR)/
+	rm -rf docs/_build/

@@ -36,6 +36,12 @@ include = ["missiontools*"]
 testpaths = ["tests"]
 
 [dependency-groups]
-dev = [
-    "pdoc>=16.0.0",
+docs = [
+    "sphinx>=8",
+    "furo",
+    "nbsphinx",
+    "sphinx-autobuild",
+    "ipython",
+    "ipykernel>=7.2.0",
+    "cartopy>=0.25.0",
 ]
