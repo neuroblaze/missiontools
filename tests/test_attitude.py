@@ -3,7 +3,8 @@ import pytest
 
 from missiontools import (AbstractAttitudeLaw, FixedAttitudeLaw,
                           TrackAttitudeLaw, CustomAttitudeLaw,
-                          LimbAttitudeLaw, Spacecraft)
+                          LimbAttitudeLaw, ConditionAttitudeLaw,
+                          AbstractCondition, Spacecraft)
 from missiontools.orbit.propagation import propagate_analytical
 from missiontools.attitude.attitude_law import _q_boresight
 
@@ -624,3 +625,195 @@ class TestAttitudeLawCustom:
         r = repr(law)
         assert "CustomAttitudeLaw" in r
         assert "_identity_cb" in r
+
+
+# ===========================================================================
+# ConditionAttitudeLaw
+# ===========================================================================
+
+class _ConstCondition(AbstractCondition):
+    """Test helper: returns a constant boolean for all timesteps."""
+
+    def __init__(self, value: bool):
+        super().__init__()
+        self._value = bool(value)
+
+    def _compute(self, t):
+        return np.full(len(t), self._value, dtype=bool)
+
+    def __repr__(self):
+        return f"ConstCondition({self._value})"
+
+
+class _MaskCondition(AbstractCondition):
+    """Test helper: returns a fixed boolean mask, ignoring t."""
+
+    def __init__(self, mask):
+        super().__init__()
+        self._mask = np.asarray(mask, dtype=bool)
+
+    def _compute(self, t):
+        return self._mask[: len(t)]
+
+    def __repr__(self):
+        return "MaskCondition()"
+
+
+class TestConditionAttitudeLawConstruct:
+
+    def test_rejects_non_attitude_default(self):
+        with pytest.raises(TypeError, match="default_attitude"):
+            ConditionAttitudeLaw("not a law", [])
+
+    def test_rejects_bad_pair_shape(self):
+        default = FixedAttitudeLaw.nadir()
+        with pytest.raises(TypeError, match="2-tuple"):
+            ConditionAttitudeLaw(default, [(_ConstCondition(True),)])
+
+    def test_rejects_non_condition_in_pair(self):
+        default = FixedAttitudeLaw.nadir()
+        law = FixedAttitudeLaw([0., 1., 0.], 'eci')
+        with pytest.raises(TypeError, match="AbstractCondition"):
+            ConditionAttitudeLaw(default, [("not a cond", law)])
+
+    def test_rejects_non_law_in_pair(self):
+        default = FixedAttitudeLaw.nadir()
+        with pytest.raises(TypeError, match="AbstractAttitudeLaw"):
+            ConditionAttitudeLaw(default, [(_ConstCondition(True), "not a law")])
+
+    def test_repr(self):
+        default = FixedAttitudeLaw.nadir()
+        law = ConditionAttitudeLaw(default, [])
+        r = repr(law)
+        assert "ConditionAttitudeLaw" in r
+        assert "default=" in r
+
+
+class TestConditionAttitudeLawDispatch:
+
+    def test_empty_branches_matches_default(self):
+        """Empty condition_attitudes degenerates to default everywhere."""
+        default = FixedAttitudeLaw([0., 1., 0.], 'eci')
+        law = ConditionAttitudeLaw(default, [])
+        r, v, t = _orbit_state()
+        np.testing.assert_allclose(law.pointing_eci(r, v, t),
+                                   default.pointing_eci(r, v, t),
+                                   atol=1e-12)
+
+    def test_always_true_branch_overrides_default(self):
+        """Always-True condition routes every sample to its branch law."""
+        default = FixedAttitudeLaw.nadir()
+        branch  = FixedAttitudeLaw([0., 1., 0.], 'eci')
+        law = ConditionAttitudeLaw(default, [(_ConstCondition(True), branch)])
+        r, v, t = _orbit_state()
+        np.testing.assert_allclose(law.pointing_eci(r, v, t),
+                                   branch.pointing_eci(r, v, t),
+                                   atol=1e-12)
+
+    def test_always_false_branch_falls_through(self):
+        """Always-False condition leaves every sample on the default."""
+        default = FixedAttitudeLaw.nadir()
+        branch  = FixedAttitudeLaw([0., 1., 0.], 'eci')
+        law = ConditionAttitudeLaw(default, [(_ConstCondition(False), branch)])
+        r, v, t = _orbit_state()
+        np.testing.assert_allclose(law.pointing_eci(r, v, t),
+                                   default.pointing_eci(r, v, t),
+                                   atol=1e-12)
+
+    def test_priority_first_match_wins(self):
+        """When two conditions hold, the earlier one in the list wins."""
+        default = FixedAttitudeLaw.nadir()
+        first   = FixedAttitudeLaw([1., 0., 0.], 'eci')
+        second  = FixedAttitudeLaw([0., 1., 0.], 'eci')
+        law = ConditionAttitudeLaw(
+            default,
+            [(_ConstCondition(True), first),
+             (_ConstCondition(True), second)],
+        )
+        r, v, t = _orbit_state()
+        np.testing.assert_allclose(law.pointing_eci(r, v, t),
+                                   first.pointing_eci(r, v, t),
+                                   atol=1e-12)
+
+    def test_scatter_gather_matches_naive_per_sample(self):
+        """Per-sample dispatch must equal a naive evaluate-all-and-mask."""
+        default = FixedAttitudeLaw.nadir()
+        branch  = FixedAttitudeLaw([0., 1., 0.], 'eci')
+
+        N = 10
+        t  = np.array([_EPOCH + np.timedelta64(60 * k, 's') for k in range(N)])
+        r, v = propagate_analytical(t, **_SC_KW, propagator_type='twobody')
+
+        mask = np.array([True, False, True, True, False,
+                         False, True, False, True, True])
+        cond = _MaskCondition(mask)
+        law = ConditionAttitudeLaw(default, [(cond, branch)])
+
+        actual = law.pointing_eci(r, v, t)
+
+        ref = default.pointing_eci(r, v, t).copy()
+        ref[mask] = branch.pointing_eci(r[mask], v[mask], t[mask])
+        np.testing.assert_allclose(actual, ref, atol=1e-12)
+
+    def test_rotate_from_body_dispatches(self):
+        default = FixedAttitudeLaw.nadir()
+        branch  = FixedAttitudeLaw([0., 1., 0.], 'eci')
+        law = ConditionAttitudeLaw(default, [(_ConstCondition(True), branch)])
+        r, v, t = _orbit_state()
+        v_body = np.array([1., 0., 0.])
+        np.testing.assert_allclose(
+            law.rotate_from_body(v_body, r, v, t),
+            branch.rotate_from_body(v_body, r, v, t),
+            atol=1e-12,
+        )
+
+    def test_scalar_input_returns_scalar_shape(self):
+        default = FixedAttitudeLaw.nadir()
+        law = ConditionAttitudeLaw(default, [])
+        r, v = propagate_analytical(np.array([_EPOCH]),
+                                    **_SC_KW, propagator_type='twobody')
+        p = law.pointing_eci(r[0], v[0], _EPOCH)
+        assert p.shape == (3,)
+
+
+class TestConditionAttitudeLawYawSteering:
+
+    def test_yaw_steering_propagates_to_children(self):
+        from missiontools import NormalVectorSolarConfig
+        default = FixedAttitudeLaw.nadir()
+        branch  = FixedAttitudeLaw([0., 1., 0.], 'eci')
+        law = ConditionAttitudeLaw(default, [(_ConstCondition(True), branch)])
+        cfg = NormalVectorSolarConfig(
+            normal_vecs=[[1, 0, 0]], areas=[1.0], efficiency=0.3,
+        )
+        law.yaw_steering(cfg)
+        assert default._solar_config is cfg
+        assert branch._solar_config is cfg
+        assert law._solar_config is cfg
+
+    def test_yaw_steering_disable(self):
+        from missiontools import NormalVectorSolarConfig
+        default = FixedAttitudeLaw.nadir()
+        branch  = FixedAttitudeLaw([0., 1., 0.], 'eci')
+        law = ConditionAttitudeLaw(default, [(_ConstCondition(True), branch)])
+        cfg = NormalVectorSolarConfig(
+            normal_vecs=[[1, 0, 0]], areas=[1.0], efficiency=0.3,
+        )
+        law.yaw_steering(cfg)
+        law.yaw_steering(None)
+        assert default._solar_config is None
+        assert branch._solar_config is None
+        assert law._solar_config is None
+
+    def test_yaw_steering_raises_when_child_unsupported(self):
+        from missiontools import NormalVectorSolarConfig
+        default = FixedAttitudeLaw.nadir()
+        unsupported = CustomAttitudeLaw(_identity_cb)   # raises
+        law = ConditionAttitudeLaw(
+            default, [(_ConstCondition(True), unsupported)],
+        )
+        cfg = NormalVectorSolarConfig(
+            normal_vecs=[[1, 0, 0]], areas=[1.0], efficiency=0.3,
+        )
+        with pytest.raises(NotImplementedError):
+            law.yaw_steering(cfg)

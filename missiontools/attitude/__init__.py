@@ -39,10 +39,12 @@ from .attitude_law import (AbstractAttitudeLaw,
                            FixedAttitudeLaw,
                            TrackAttitudeLaw,
                            CustomAttitudeLaw,
-                           LimbAttitudeLaw)
+                           LimbAttitudeLaw,
+                           ConditionAttitudeLaw)
 
 __all__ = ['AbstractAttitudeLaw',
            'FixedAttitudeLaw',
            'TrackAttitudeLaw',
            'CustomAttitudeLaw',
-           'LimbAttitudeLaw']
+           'LimbAttitudeLaw',
+           'ConditionAttitudeLaw']

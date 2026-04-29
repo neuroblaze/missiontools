@@ -1,0 +1,220 @@
+import numpy as np
+import pytest
+
+from missiontools import (AbstractCondition, SpaceGroundAccessCondition,
+                          GroundStation, Spacecraft)
+from missiontools.condition.condition import AbstractCondition as _AC
+
+
+# ---------------------------------------------------------------------------
+# Shared fixtures
+# ---------------------------------------------------------------------------
+
+_EPOCH = np.datetime64('2025-01-01T00:00:00', 'us')
+_T_END = _EPOCH + np.timedelta64(2 * 24 * 3600, 's')   # 2 days
+
+_SC_KW = dict(
+    a      = 6_771_000.0,
+    e      = 0.0,
+    i      = np.radians(51.6),
+    raan   = 0.0,
+    arg_p  = 0.0,
+    ma     = 0.0,
+    epoch  = _EPOCH,
+)
+_SC = Spacecraft(**_SC_KW)
+_GS = GroundStation(lat=51.5, lon=-0.1)   # London
+
+
+class _CountingCondition(AbstractCondition):
+    """Test helper: returns alternating booleans, counts _compute calls."""
+
+    def __init__(self, cache_size=16):
+        super().__init__(cache_size=cache_size)
+        self.calls = 0
+
+    def _compute(self, t):
+        self.calls += 1
+        # Alternate True/False
+        return (np.arange(len(t)) % 2 == 0)
+
+    def __repr__(self):
+        return "CountingCondition()"
+
+
+class _DirectAtCondition(AbstractCondition):
+    """Test helper: overrides at() directly, bypassing the cache."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def at(self, t):
+        self.calls += 1
+        t_arr = np.atleast_1d(np.asarray(t, dtype='datetime64[us]'))
+        return np.ones(len(t_arr), dtype=bool)
+
+    def _compute(self, t):
+        raise AssertionError("_compute should not be called when at() is overridden")
+
+    def __repr__(self):
+        return "DirectAtCondition()"
+
+
+# ===========================================================================
+# AbstractCondition: caching + shape handling
+# ===========================================================================
+
+class TestAbstractConditionCache:
+
+    def test_cache_hit_avoids_recompute(self):
+        c = _CountingCondition()
+        t = np.arange('2025-01-01', '2025-01-01T00:00:10', dtype='datetime64[s]')
+        c.at(t)
+        c.at(t)
+        c.at(t)
+        assert c.calls == 1
+
+    def test_cache_miss_on_different_t(self):
+        c = _CountingCondition()
+        t1 = np.array([_EPOCH], dtype='datetime64[us]')
+        t2 = np.array([_EPOCH + np.timedelta64(1, 's')], dtype='datetime64[us]')
+        c.at(t1)
+        c.at(t2)
+        assert c.calls == 2
+
+    def test_cache_eviction_lru(self):
+        """When cache_size is exceeded, oldest entry is evicted (LRU)."""
+        c = _CountingCondition(cache_size=2)
+        t1 = np.array([_EPOCH], dtype='datetime64[us]')
+        t2 = np.array([_EPOCH + np.timedelta64(1, 's')], dtype='datetime64[us]')
+        t3 = np.array([_EPOCH + np.timedelta64(2, 's')], dtype='datetime64[us]')
+        c.at(t1)
+        c.at(t2)
+        c.at(t3)            # evicts t1
+        c.at(t2)            # still cached
+        c.at(t1)            # was evicted -> recompute
+        assert c.calls == 4
+
+    def test_cache_size_zero_disables_cache(self):
+        c = _CountingCondition(cache_size=0)
+        t = np.array([_EPOCH], dtype='datetime64[us]')
+        c.at(t)
+        c.at(t)
+        assert c.calls == 2
+
+    def test_negative_cache_size_rejected(self):
+        with pytest.raises(ValueError, match="cache_size"):
+            _CountingCondition(cache_size=-1)
+
+    def test_subclass_can_override_at(self):
+        """Subclasses bypass caching by overriding at() directly."""
+        c = _DirectAtCondition()
+        t = np.array([_EPOCH], dtype='datetime64[us]')
+        c.at(t)
+        c.at(t)
+        assert c.calls == 2
+
+
+class TestAbstractConditionShapes:
+
+    def test_scalar_t_returns_python_bool(self):
+        c = _CountingCondition()
+        result = c.at(_EPOCH)
+        assert isinstance(result, bool)
+
+    def test_array_t_returns_bool_array(self):
+        c = _CountingCondition()
+        t = np.array([_EPOCH, _EPOCH + np.timedelta64(1, 's')])
+        result = c.at(t)
+        assert isinstance(result, np.ndarray)
+        assert result.dtype == bool
+        assert result.shape == (2,)
+
+
+# ===========================================================================
+# SpaceGroundAccessCondition: type checking + construction
+# ===========================================================================
+
+class TestSpaceGroundAccessConditionConstruct:
+
+    def test_rejects_non_spacecraft(self):
+        with pytest.raises(TypeError, match="spacecraft"):
+            SpaceGroundAccessCondition("not a spacecraft", _GS)
+
+    def test_rejects_non_ground_station(self):
+        with pytest.raises(TypeError, match="ground_station"):
+            SpaceGroundAccessCondition(_SC, "not a gs")
+
+    def test_rejects_nonfinite_el_min(self):
+        with pytest.raises(ValueError, match="el_min"):
+            SpaceGroundAccessCondition(_SC, _GS, el_min=np.inf)
+
+    def test_repr_contains_el_min(self):
+        c = SpaceGroundAccessCondition(_SC, _GS, el_min=7.5)
+        assert '7.5' in repr(c)
+
+
+# ===========================================================================
+# SpaceGroundAccessCondition: geometric correctness
+# ===========================================================================
+
+class TestSpaceGroundAccessConditionGeometry:
+
+    def test_subsat_point_sees_spacecraft(self):
+        """A GS at the subsatellite point at t0 must see the SC."""
+        from missiontools.orbit.propagation import propagate_analytical
+        from missiontools.orbit.frames import eci_to_ecef
+
+        t = np.array([_EPOCH])
+        r, _ = propagate_analytical(t, **_SC_KW, propagator_type='twobody')
+        r_ecef = eci_to_ecef(r, t)[0]
+        lat = np.degrees(np.arcsin(r_ecef[2] / np.linalg.norm(r_ecef)))
+        lon = np.degrees(np.arctan2(r_ecef[1], r_ecef[0]))
+        gs = GroundStation(lat=lat, lon=lon)
+        cond = SpaceGroundAccessCondition(_SC, gs, el_min=5.0)
+        assert cond.at(_EPOCH) is True
+
+    def test_antipodal_point_does_not_see_spacecraft(self):
+        """A GS antipodal to the subsatellite point cannot see the SC."""
+        from missiontools.orbit.propagation import propagate_analytical
+        from missiontools.orbit.frames import eci_to_ecef
+
+        t = np.array([_EPOCH])
+        r, _ = propagate_analytical(t, **_SC_KW, propagator_type='twobody')
+        r_ecef = eci_to_ecef(r, t)[0]
+        lat = np.degrees(np.arcsin(r_ecef[2] / np.linalg.norm(r_ecef)))
+        lon = np.degrees(np.arctan2(r_ecef[1], r_ecef[0]))
+        gs = GroundStation(lat=-lat, lon=lon + 180.0)
+        cond = SpaceGroundAccessCondition(_SC, gs, el_min=0.0)
+        assert cond.at(_EPOCH) is False
+
+    def test_higher_el_min_only_removes_passes(self):
+        """Raising el_min cannot turn False samples True."""
+        t = np.arange(_EPOCH, _T_END,
+                      np.timedelta64(120, 's'), dtype='datetime64[us]')
+        c0 = SpaceGroundAccessCondition(_SC, _GS, el_min=0.0)
+        c10 = SpaceGroundAccessCondition(_SC, _GS, el_min=10.0)
+        v0  = c0.at(t)
+        v10 = c10.at(t)
+        # Every True at el_min=10 must also be True at el_min=0.
+        assert np.all(v0[v10])
+        assert v0.sum() >= v10.sum()
+
+    def test_agrees_with_gs_access_intervals(self):
+        """Sample-wise truth must match interval-membership from GroundStation.access."""
+        t = np.arange(_EPOCH, _T_END,
+                      np.timedelta64(60, 's'), dtype='datetime64[us]')
+        cond = SpaceGroundAccessCondition(_SC, _GS, el_min=5.0)
+        samples = cond.at(t)
+        intervals = _GS.access(_SC, _EPOCH, _T_END, el_min=5.0,
+                               max_step=np.timedelta64(30, 's'))
+
+        expected = np.zeros(len(t), dtype=bool)
+        for (a, b) in intervals:
+            expected |= (t >= a) & (t <= b)
+
+        # Boundary-adjacent samples can disagree by one step due to the
+        # rootfind cadence; require >99% agreement.
+        agreement = np.mean(samples == expected)
+        assert agreement > 0.99

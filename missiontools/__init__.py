@@ -60,6 +60,14 @@ Classes
     User-supplied quaternion callback attitude law.
 :class:`LimbAttitudeLaw`
     Limb-pointing attitude law.
+:class:`ConditionAttitudeLaw`
+    Conditional attitude law that routes between child laws based on
+    a chain of :class:`AbstractCondition` predicates.
+:class:`AbstractCondition`
+    Abstract base class for boolean time-domain predicates.
+:class:`SpaceGroundAccessCondition`
+    Condition that holds when a spacecraft is above the horizon (or a
+    specified minimum elevation) as seen from a ground station.
 :class:`GroundStation`
     A ground station defined in WGS84 geodetic coordinates, with an
     :meth:`~GroundStation.access` method for contact scheduling.
@@ -97,6 +105,8 @@ Submodules
     Orbital mechanics, propagation, frame transformations, and access analysis.
 :mod:`~missiontools.attitude`
     Attitude law representations.
+:mod:`~missiontools.condition`
+    Boolean time-domain conditions for control logic.
 :mod:`~missiontools.coverage`
     Coverage and access analysis, geographic area sampling.
 :mod:`~missiontools.power`
@@ -114,7 +124,8 @@ __version__ = "0.1.0"
 __all__ = [
     'Spacecraft', 'AbstractSensor', 'ConicSensor',
     'AbstractAttitudeLaw', 'FixedAttitudeLaw', 'TrackAttitudeLaw',
-    'CustomAttitudeLaw', 'LimbAttitudeLaw',
+    'CustomAttitudeLaw', 'LimbAttitudeLaw', 'ConditionAttitudeLaw',
+    'AbstractCondition', 'SpaceGroundAccessCondition',
     'GroundStation', 'AoI', 'Coverage',
     'AbstractSolarConfig', 'NormalVectorSolarConfig',
     'ThermalCircuit', 'ThermalResult', 'AbstractThermalConfig', 'NormalVectorThermalConfig',
@@ -124,7 +135,9 @@ __all__ = [
 
 from .spacecraft import Spacecraft
 from .attitude import (AbstractAttitudeLaw, FixedAttitudeLaw,
-                       TrackAttitudeLaw, CustomAttitudeLaw, LimbAttitudeLaw)
+                       TrackAttitudeLaw, CustomAttitudeLaw, LimbAttitudeLaw,
+                       ConditionAttitudeLaw)
+from .condition import AbstractCondition, SpaceGroundAccessCondition
 from .ground_station import GroundStation
 from .aoi import AoI
 from .sensor import AbstractSensor, ConicSensor

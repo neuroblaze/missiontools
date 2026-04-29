@@ -6,10 +6,11 @@ Spacecraft/sensor pointing laws with full quaternion internal storage.
 Hierarchy
 ---------
 :class:`AbstractAttitudeLaw` (ABC)
-├── :class:`FixedAttitudeLaw`   — constant orientation in a reference frame
-├── :class:`TrackAttitudeLaw`   — boresight tracks a target spacecraft
-├── :class:`CustomAttitudeLaw`  — user-supplied quaternion callback
-└── :class:`LimbAttitudeLaw`    — body vector grazes an offset ellipsoid
+├── :class:`FixedAttitudeLaw`     — constant orientation in a reference frame
+├── :class:`TrackAttitudeLaw`     — boresight tracks a target spacecraft
+├── :class:`CustomAttitudeLaw`    — user-supplied quaternion callback
+├── :class:`LimbAttitudeLaw`      — body vector grazes an offset ellipsoid
+└── :class:`ConditionAttitudeLaw` — routes between attitude laws by condition
 """
 from __future__ import annotations
 
@@ -1047,3 +1048,166 @@ class LimbAttitudeLaw(AbstractAttitudeLaw):
 
         result = vecs / np.linalg.norm(vecs, axis=1, keepdims=True)
         return result[0] if scalar else result
+
+
+# ---------------------------------------------------------------------------
+# ConditionAttitudeLaw
+# ---------------------------------------------------------------------------
+
+class ConditionAttitudeLaw(AbstractAttitudeLaw):
+    """Conditional attitude law: route between attitude laws by condition.
+
+    Each timestep is dispatched to one of a chain of child attitude laws,
+    selected by evaluating a list of
+    :class:`~missiontools.condition.AbstractCondition` predicates in
+    priority order.  When no condition holds, the timestep falls through
+    to ``default_attitude``.
+
+    Parameters
+    ----------
+    default_attitude : AbstractAttitudeLaw
+        The fallback law used at any timestep where no condition holds.
+    condition_attitudes : list of (AbstractCondition, AbstractAttitudeLaw)
+        Ordered chain of (condition, law) pairs.  At each timestep, the
+        first condition that evaluates to ``True`` selects its paired law;
+        earlier pairs take precedence over later ones.  An empty list is
+        permitted and produces a degenerate wrapper around
+        ``default_attitude``.
+
+    Raises
+    ------
+    TypeError
+        If ``default_attitude`` is not an :class:`AbstractAttitudeLaw`, or
+        any element of ``condition_attitudes`` is not a 2-tuple of
+        (:class:`~missiontools.condition.AbstractCondition`,
+        :class:`AbstractAttitudeLaw`).
+
+    Notes
+    -----
+    Switching between child laws produces an instantaneous pointing
+    discontinuity at the boundary; no slew dynamics are modelled.
+
+    Yaw steering, when enabled via :meth:`yaw_steering`, is propagated
+    to every child law and to the default; if any child does not
+    support yaw steering the call raises ``NotImplementedError``.
+
+    Examples
+    --------
+    Switch from nadir pointing to ground-station tracking when the
+    spacecraft is in view of a downlink site::
+
+        from missiontools import (FixedAttitudeLaw, TrackAttitudeLaw,
+                                  GroundStation, Spacecraft)
+        from missiontools.attitude import ConditionAttitudeLaw
+        from missiontools.condition import SpaceGroundAccessCondition
+
+        sc       = Spacecraft(...)
+        gs       = GroundStation(lat=51.5, lon=-0.1)
+        link_law = TrackAttitudeLaw(...)
+        nadir    = FixedAttitudeLaw.nadir()
+        cond     = SpaceGroundAccessCondition(sc, gs, el_min=5.0)
+
+        law = ConditionAttitudeLaw(
+            default_attitude    = nadir,
+            condition_attitudes = [(cond, link_law)],
+        )
+    """
+
+    def __init__(self, default_attitude, condition_attitudes) -> None:
+        super().__init__()
+        from ..condition import AbstractCondition
+        if not isinstance(default_attitude, AbstractAttitudeLaw):
+            raise TypeError(
+                f"default_attitude must be an AbstractAttitudeLaw instance, "
+                f"got {type(default_attitude).__name__!r}"
+            )
+        pairs = list(condition_attitudes)
+        for idx, item in enumerate(pairs):
+            if (not isinstance(item, tuple) or len(item) != 2):
+                raise TypeError(
+                    f"condition_attitudes[{idx}] must be a 2-tuple "
+                    f"(AbstractCondition, AbstractAttitudeLaw), got {item!r}"
+                )
+            cond, law = item
+            if not isinstance(cond, AbstractCondition):
+                raise TypeError(
+                    f"condition_attitudes[{idx}][0] must be an "
+                    f"AbstractCondition instance, got "
+                    f"{type(cond).__name__!r}"
+                )
+            if not isinstance(law, AbstractAttitudeLaw):
+                raise TypeError(
+                    f"condition_attitudes[{idx}][1] must be an "
+                    f"AbstractAttitudeLaw instance, got "
+                    f"{type(law).__name__!r}"
+                )
+        self._default = default_attitude
+        self._pairs = pairs
+
+    def __repr__(self) -> str:
+        branches = ', '.join(f"({c!r}, {l!r})" for c, l in self._pairs)
+        return (
+            f"ConditionAttitudeLaw(default={self._default!r}, "
+            f"branches=[{branches}])"
+        )
+
+    def _resolve_winners(self, t_arr: npt.NDArray) -> npt.NDArray[np.intp]:
+        """Per-sample winning child index, or -1 for the default."""
+        N = len(t_arr)
+        winners = np.full(N, -1, dtype=np.intp)
+        if not self._pairs:
+            return winners
+        unresolved = np.ones(N, dtype=bool)
+        for k, (cond, _) in enumerate(self._pairs):
+            if not unresolved.any():
+                break
+            mask = np.asarray(cond.at(t_arr), dtype=bool)
+            take = unresolved & mask
+            winners[take] = k
+            unresolved &= ~mask
+        return winners
+
+    def _dispatch(self, method_name: str,
+                  r_2d: npt.NDArray, v_2d: npt.NDArray,
+                  t_arr: npt.NDArray, *extra) -> npt.NDArray:
+        """Scatter-gather: call each child law on its assigned sample subset.
+
+        ``extra`` is forwarded ahead of (r, v, t) to support
+        :meth:`rotate_from_body` whose signature is (v_body, r, v, t).
+        """
+        winners = self._resolve_winners(t_arr)
+        N = len(t_arr)
+        out = np.empty((N, 3), dtype=np.float64)
+        unique = np.unique(winners)
+        for k in unique:
+            mask = winners == k
+            law = self._default if k == -1 else self._pairs[k][1]
+            res = getattr(law, method_name)(*extra,
+                                            r_2d[mask], v_2d[mask],
+                                            t_arr[mask])
+            out[mask] = np.atleast_2d(res)
+        return out
+
+    def pointing_eci(self, r_eci, v_eci, t):
+        r_2d, v_2d, t_arr, scalar = self._coerce_inputs(r_eci, v_eci, t)
+        vecs = self._dispatch('pointing_eci', r_2d, v_2d, t_arr)
+        result = vecs / np.linalg.norm(vecs, axis=1, keepdims=True)
+        return result[0] if scalar else result
+
+    def rotate_from_body(self, v_body, r_eci, v_eci, t):
+        v   = np.asarray(v_body, dtype=np.float64)
+        v   = v / np.linalg.norm(v)
+        r_2d, v_2d, t_arr, scalar = self._coerce_inputs(r_eci, v_eci, t)
+        vecs = self._dispatch('rotate_from_body', r_2d, v_2d, t_arr, v)
+        result = vecs / np.linalg.norm(vecs, axis=1, keepdims=True)
+        return result[0] if scalar else result
+
+    def yaw_steering(self, solar_config) -> None:
+        self._default.yaw_steering(solar_config)
+        for _, law in self._pairs:
+            law.yaw_steering(solar_config)
+        if solar_config is None:
+            self._solar_config = None
+            self._yaw_opt_dir  = None
+        else:
+            self._solar_config = solar_config
