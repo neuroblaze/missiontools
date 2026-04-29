@@ -152,6 +152,59 @@ def _intersect_intervals(
     return result
 
 
+def _union_intervals(
+    intervals: list[tuple[np.datetime64, np.datetime64]],
+) -> list[tuple[np.datetime64, np.datetime64]]:
+    if not intervals:
+        return []
+    sorted_ivs = sorted(intervals, key=lambda iv: iv[0])
+    merged = [sorted_ivs[0]]
+    for start, end in sorted_ivs[1:]:
+        if start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _condition_filter_intervals(
+    intervals: list[tuple[np.datetime64, np.datetime64]],
+    event_step_td: np.timedelta64,
+    *conditions: AbstractCondition | None,
+) -> list[tuple[np.datetime64, np.datetime64]]:
+    filtered: list[tuple[np.datetime64, np.datetime64]] = []
+    for iv_start, iv_end in intervals:
+        duration_us = int((iv_end - iv_start) / np.timedelta64(1, "us"))
+        step_us = int(event_step_td / np.timedelta64(1, "us"))
+        if step_us <= 0:
+            step_us = 1
+        n_samples = duration_us // step_us + 1
+        offsets_us = np.arange(n_samples, dtype=np.int64) * step_us
+        sample_times = iv_start + offsets_us.astype("timedelta64[us]")
+        if offsets_us[-1] < duration_us:
+            sample_times = np.append(
+                sample_times,
+                iv_start + np.timedelta64(duration_us, "us"),
+            )
+        mask = np.ones(len(sample_times), dtype=bool)
+        for cond in conditions:
+            if cond is not None:
+                mask &= cond.at(sample_times)
+        runs = _find_exceedance_runs(mask.astype(np.float64), 0.5)
+        for r_start, r_end in runs:
+            filtered.append((sample_times[r_start], sample_times[r_end]))
+    return filtered
+
+
+def _total_interval_seconds(
+    intervals: list[tuple[np.datetime64, np.datetime64]],
+) -> float:
+    total = 0.0
+    for start, end in intervals:
+        total += float((end - start) / np.timedelta64(1, "s"))
+    return total
+
+
 def _find_exceedance_runs(
     psd: npt.NDArray[np.floating],
     threshold: float,
@@ -191,6 +244,16 @@ class InterferenceAnalysis:
         self._victim_txs: list[dict] = []
         self._victim_rxs: list[dict] = []
         self._interfering_txs: list[dict] = []
+        self._cached_events: list[dict] | None = None
+        self._cached_access_intervals: dict[str, dict[str, list]] | None = None
+        self._cached_access_totals: dict[str, dict[str, float]] | None = None
+        self._compute_psd_threshold: float | None = None
+
+    def _invalidate_cache(self) -> None:
+        self._cached_events = None
+        self._cached_access_intervals = None
+        self._cached_access_totals = None
+        self._compute_psd_threshold = None
 
     def add_victim_tx(
         self,
@@ -218,6 +281,7 @@ class InterferenceAnalysis:
                 "condition": condition,
             }
         )
+        self._invalidate_cache()
 
     def add_victim_rx(
         self,
@@ -243,6 +307,7 @@ class InterferenceAnalysis:
                 "condition": condition,
             }
         )
+        self._invalidate_cache()
 
     def add_interfering_tx(
         self,
@@ -270,6 +335,7 @@ class InterferenceAnalysis:
                 "condition": condition,
             }
         )
+        self._invalidate_cache()
 
     def compute(
         self,
@@ -278,7 +344,7 @@ class InterferenceAnalysis:
         end_time: npt.ArrayLike,
         max_step: float = 10.0,
         event_step: float = 1.0,
-    ) -> list[dict]:
+    ) -> tuple[list[dict], dict[str, dict[str, float]]]:
         """Compute interference events.
 
         Parameters
@@ -298,13 +364,19 @@ class InterferenceAnalysis:
 
         Returns
         -------
-        list[dict]
+        events : list[dict]
             Each dict represents an interference event with keys:
             ``victim_tx``, ``victim_rx``, ``interfering_tx`` (str),
             ``start_time``, ``end_time`` (datetime64),
             ``max_interferer_psd`` (float, dBW/Hz),
             ``times`` (ndarray of datetime64),
             ``interferer_psd``, ``victim_psd`` (ndarray, dBW/Hz).
+        access_totals : dict[str, dict[str, float]]
+            Nested dictionary of total pairwise condition-filtered
+            access times in seconds.  Index as
+            ``access_totals[victim_tx_name][victim_rx_name]``.
+            Access intervals are filtered by the conditions applied
+            to the victim transmitter and receiver.
         """
         if not self._victim_txs:
             raise ValueError("No victim transmitters have been added.")
@@ -320,10 +392,34 @@ class InterferenceAnalysis:
 
         access_cache: dict = {}
         events: list[dict] = []
+        access_intervals: dict[str, dict[str, list]] = {}
 
         for vtx, vrx, itx in product(
             self._victim_txs, self._victim_rxs, self._interfering_txs
         ):
+            vtx_name = vtx["name"]
+            vrx_name = vrx["name"]
+
+            if vtx_name not in access_intervals:
+                access_intervals[vtx_name] = {}
+            if vrx_name not in access_intervals[vtx_name]:
+                vtx_host = vtx["antenna"].host
+                vrx_host = vrx["antenna"].host
+                geom_intervals = _get_access_intervals(
+                    access_cache,
+                    vtx_host,
+                    vrx_host,
+                    t_start,
+                    t_end,
+                    max_step_td,
+                )
+                access_intervals[vtx_name][vrx_name] = _condition_filter_intervals(
+                    geom_intervals,
+                    event_step_td,
+                    vtx["condition"],
+                    vrx["condition"],
+                )
+
             vtx_host = vtx["antenna"].host
             vrx_host = vrx["antenna"].host
             itx_host = itx["antenna"].host
@@ -429,8 +525,8 @@ class InterferenceAnalysis:
                 for run_start, run_end in runs:
                     events.append(
                         {
-                            "victim_tx": vtx["name"],
-                            "victim_rx": vrx["name"],
+                            "victim_tx": vtx_name,
+                            "victim_rx": vrx_name,
                             "interfering_tx": itx["name"],
                             "start_time": times_masked[run_start],
                             "end_time": times_masked[run_end],
@@ -445,4 +541,154 @@ class InterferenceAnalysis:
                         }
                     )
 
-        return events
+        access_totals: dict[str, dict[str, float]] = {}
+        for vtx_name, rx_map in access_intervals.items():
+            access_totals[vtx_name] = {}
+            for vrx_name, intervals in rx_map.items():
+                access_totals[vtx_name][vrx_name] = _total_interval_seconds(intervals)
+
+        self._cached_events = events
+        self._cached_access_intervals = access_intervals
+        self._cached_access_totals = access_totals
+        self._compute_psd_threshold = psd_threshold
+
+        return events, access_totals
+
+    def interference_percentage(
+        self,
+        psd_threshold: float | list[float] | npt.ArrayLike,
+        victim_tx: str | list[str] | npt.ArrayLike,
+        victim_rx: str,
+        interfering_tx: str | list[str] | npt.ArrayLike,
+    ) -> float | npt.NDArray[np.floating]:
+        """Compute interference percentage from the last ``compute()`` results.
+
+        Interference percentage is defined as::
+
+            100.0 * T_interf / T_access
+
+        where *T_interf* is the total time (in seconds) during which
+        the received interferer PSD at *victim_rx* is at or above
+        *psd_threshold* while **at least one** specified *victim_tx*
+        and **at least one** specified *interfering_tx* are visible
+        (condition-filtered), and *T_access* is the total
+        condition-filtered time that at least one specified
+        *victim_tx* is visible to *victim_rx*.
+
+        Parameters
+        ----------
+        psd_threshold : float or list[float] or array_like
+            Interference PSD threshold(s) in dBW/Hz.  All values
+            must be greater than or equal to the threshold passed to
+            the most recent ``compute()`` call.  When an array is
+            provided, an array of percentages is returned (one per
+            threshold), suitable for generating cumulative
+            interference plots.
+        victim_tx : str or list[str] or array_like
+            Name(s) of the victim transmitter(s) to include.
+        victim_rx : str
+            Name of the single victim receiver.
+        interfering_tx : str or list[str] or array_like
+            Name(s) of the interfering transmitter(s) to include.
+
+        Returns
+        -------
+        float or ndarray
+            Interference percentage(s) in the range [0, 100].
+            Returns a scalar ``float`` when *psd_threshold* is a
+            scalar, or an ``ndarray`` when *psd_threshold* is a
+            sequence.  Returns 0.0 (or an array of zeros) when the
+            denominator (total access time) is zero.
+
+        Raises
+        ------
+        RuntimeError
+            If ``compute()`` has not been run or its results have been
+            invalidated.
+        ValueError
+            If any *psd_threshold* value is less than the threshold
+            used in the most recent ``compute()`` call.
+        KeyError
+            If a specified transmitter or receiver name is not found
+            in the cached results.
+        """
+        if self._cached_events is None:
+            raise RuntimeError("No cached results.  Call compute() first.")
+
+        thresholds = np.atleast_1d(np.asarray(psd_threshold, dtype=float))
+        if np.any(thresholds < self._compute_psd_threshold):
+            raise ValueError(
+                f"all psd_threshold values must be >= the threshold "
+                f"used in compute() ({self._compute_psd_threshold})"
+            )
+
+        if isinstance(victim_tx, str):
+            vtx_names = [victim_tx]
+        else:
+            vtx_names = list(victim_tx)
+
+        if isinstance(interfering_tx, str):
+            itx_names = [interfering_tx]
+        else:
+            itx_names = list(interfering_tx)
+
+        vtx_set = set(vtx_names)
+        itx_set = set(itx_names)
+
+        assert self._cached_access_intervals is not None
+
+        denom_intervals: list[tuple[np.datetime64, np.datetime64]] = []
+        for vtx_name in vtx_names:
+            rx_map = self._cached_access_intervals.get(vtx_name)
+            if rx_map is None:
+                raise KeyError(
+                    f"Victim transmitter {vtx_name!r} not found in cached results"
+                )
+            intervals = rx_map.get(victim_rx)
+            if intervals is None:
+                raise KeyError(
+                    f"Victim receiver {victim_rx!r} not found for transmitter "
+                    f"{vtx_name!r} in cached results"
+                )
+            denom_intervals.extend(intervals)
+        denom_intervals = _union_intervals(denom_intervals)
+        denominator = _total_interval_seconds(denom_intervals)
+
+        if denominator == 0.0:
+            result = np.zeros(len(thresholds), dtype=float)
+            return (
+                float(result[0])
+                if result.ndim == 0 or len(result) == 1 and np.isscalar(psd_threshold)
+                else result
+            )
+
+        matched_events = [
+            ev
+            for ev in self._cached_events
+            if ev["victim_tx"] in vtx_set
+            and ev["victim_rx"] == victim_rx
+            and ev["interfering_tx"] in itx_set
+        ]
+
+        compute_threshold = self._compute_psd_threshold
+        results = np.empty(len(thresholds), dtype=float)
+
+        for idx, thresh in enumerate(thresholds):
+            numer_intervals: list[tuple[np.datetime64, np.datetime64]] = []
+            for event in matched_events:
+                if thresh == compute_threshold:
+                    numer_intervals.append((event["start_time"], event["end_time"]))
+                else:
+                    runs = _find_exceedance_runs(event["interferer_psd"], float(thresh))
+                    evt_times = event["times"]
+                    for r_start, r_end in runs:
+                        numer_intervals.append((evt_times[r_start], evt_times[r_end]))
+            numer_intervals = _union_intervals(numer_intervals)
+            numerator = _total_interval_seconds(numer_intervals)
+            results[idx] = 100.0 * numerator / denominator
+
+        if np.isscalar(psd_threshold) and not isinstance(
+            psd_threshold, (list, np.ndarray)
+        ):
+            return float(results[0])
+        return results
