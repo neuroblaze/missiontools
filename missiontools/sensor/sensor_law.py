@@ -114,13 +114,33 @@ class AbstractSensor(ABC):
     provided here and delegate to :meth:`pointing_eci` plus a frame transform.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, condition=None) -> None:
         self._spacecraft = None  # set by Spacecraft.add_sensor
+        self._condition = None
+        if condition is not None:
+            self.condition = condition
 
     @property
     def spacecraft(self):
         """Host spacecraft, or ``None`` if not yet attached."""
         return self._spacecraft
+
+    @property
+    def condition(self):
+        """Optional :class:`~missiontools.AbstractCondition` controlling when this
+        sensor is active, or ``None`` (always active)."""
+        return self._condition
+
+    @condition.setter
+    def condition(self, value):
+        from ..condition import AbstractCondition
+
+        if value is not None and not isinstance(value, AbstractCondition):
+            raise TypeError(
+                f"condition must be an AbstractCondition instance or None, "
+                f"got {type(value).__name__!r}"
+            )
+        self._condition = value
 
     @abstractmethod
     def pointing_eci(
@@ -271,8 +291,9 @@ class ConicSensor(AbstractSensor):
         attitude_law=None,
         body_vector: npt.ArrayLike | None = None,
         body_euler_deg: tuple[float, float, float] | None = None,
+        condition=None,
     ):
-        super().__init__()
+        super().__init__(condition=condition)
 
         # --- validate half-angle -------------------------------------------
         half_angle_deg = float(half_angle_deg)
@@ -394,14 +415,17 @@ class ConicSensor(AbstractSensor):
         )
 
     def __repr__(self) -> str:
+        cond_part = (
+            f", condition={self._condition!r}" if self._condition is not None else ""
+        )
         if self._mode == "independent":
             return (
                 f"ConicSensor(half_angle_deg={self.half_angle_deg:.3f}, "
-                f"attitude_law={self._attitude_law!r})"
+                f"attitude_law={self._attitude_law!r}{cond_part})"
             )
         return (
             f"ConicSensor(half_angle_deg={self.half_angle_deg:.3f}, "
-            f"mode='body', body_vector={self._body_vector.tolist()})"
+            f"mode='body', body_vector={self._body_vector.tolist()}{cond_part})"
         )
 
     def fov_spec(
@@ -481,8 +505,9 @@ class RectangularSensor(AbstractSensor):
         attitude_law=None,
         body_vector: npt.ArrayLike | None = None,
         body_euler_deg: tuple[float, float, float] | None = None,
+        condition=None,
     ):
-        super().__init__()
+        super().__init__(condition=condition)
 
         theta1_deg = float(theta1_deg)
         theta2_deg = float(theta2_deg)
@@ -650,13 +675,16 @@ class RectangularSensor(AbstractSensor):
         }
 
     def __repr__(self) -> str:
+        cond_part = (
+            f", condition={self._condition!r}" if self._condition is not None else ""
+        )
         if self._mode == "independent":
             return (
                 f"RectangularSensor(theta1_deg={self.theta1_deg:.3f}, "
                 f"theta2_deg={self.theta2_deg:.3f}, "
-                f"attitude_law={self._attitude_law!r})"
+                f"attitude_law={self._attitude_law!r}{cond_part})"
             )
         return (
             f"RectangularSensor(theta1_deg={self.theta1_deg:.3f}, "
-            f"theta2_deg={self.theta2_deg:.3f}, mode='body')"
+            f"theta2_deg={self.theta2_deg:.3f}, mode='body'{cond_part})"
         )

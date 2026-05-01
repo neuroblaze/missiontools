@@ -149,6 +149,91 @@ class AbstractCondition(ABC):
     def __invert__(self) -> NotCondition:
         return NotCondition(self)
 
+    def intervals(
+        self,
+        t_start: np.datetime64,
+        t_end: np.datetime64,
+        *,
+        max_step: np.timedelta64 = np.timedelta64(10, "s"),
+        tolerance: np.timedelta64 = np.timedelta64(1, "s"),
+    ) -> list[tuple[np.datetime64, np.datetime64]]:
+        """Return edge-refined intervals where the condition is True.
+
+        Scans ``[t_start, t_end]`` at ``max_step`` resolution, detects
+        rising/falling edges, then bisects each edge to ``tolerance``
+        precision.
+
+        Parameters
+        ----------
+        t_start : np.datetime64
+            Start of the time window.
+        t_end : np.datetime64
+            End of the time window (inclusive).
+        max_step : np.timedelta64, optional
+            Scan step for the initial coarse pass (default 10 s).
+        tolerance : np.timedelta64, optional
+            Bisection refinement tolerance (default 1 s).
+
+        Returns
+        -------
+        list[tuple[np.datetime64, np.datetime64]]
+            Sorted, non-overlapping ``[(t0, t1), ...]`` intervals where
+            the condition is True.  Empty when the condition is never True.
+        """
+        t_start = np.asarray(t_start, dtype="datetime64[us]")
+        t_end = np.asarray(t_end, dtype="datetime64[us]")
+        max_step = np.asarray(max_step, dtype="timedelta64[us]")
+        tolerance = np.asarray(tolerance, dtype="timedelta64[us]")
+
+        total_us = int((t_end - t_start) / np.timedelta64(1, "us"))
+        step_us = int(max_step / np.timedelta64(1, "us"))
+        tol_us = int(tolerance / np.timedelta64(1, "us"))
+
+        if total_us <= 0 or step_us <= 0:
+            return []
+
+        offs = np.arange(0, total_us + 1, step_us, dtype=np.int64)
+        if offs[-1] != total_us:
+            offs = np.append(offs, np.int64(total_us))
+        t_grid = t_start + offs.astype("timedelta64[us]")
+
+        flags = self.at(t_grid)
+
+        if flags.all():
+            return [(t_start, t_end)]
+        if not flags.any():
+            return []
+
+        padded = np.concatenate([[False], flags, [False]])
+        rises = np.where(np.diff(padded.astype(np.int8)) == 1)[0]
+        falls = np.where(np.diff(padded.astype(np.int8)) == -1)[0]
+
+        def _bisect(
+            lo: np.datetime64, hi: np.datetime64, target: bool
+        ) -> np.datetime64:
+            lo_us = int((lo - t_start) / np.timedelta64(1, "us"))
+            hi_us = int((hi - t_start) / np.timedelta64(1, "us"))
+            while (hi_us - lo_us) > tol_us:
+                mid_us = (lo_us + hi_us) // 2
+                mid_t = t_start + np.timedelta64(mid_us, "us")
+                if bool(self.at(mid_t)) == target:
+                    hi_us = mid_us
+                else:
+                    lo_us = mid_us
+            return t_start + np.timedelta64(hi_us, "us")
+
+        result = []
+        for ri, fi in zip(rises, falls):
+            t0 = t_grid[ri] if ri == 0 else _bisect(t_grid[ri - 1], t_grid[ri], True)
+            t1 = (
+                t_grid[fi - 1]
+                if fi == len(t_grid)
+                else _bisect(t_grid[fi - 1], t_grid[fi], False)
+            )
+            result.append((t0, t1))
+
+        return result
+
 
 class SpaceGroundAccessCondition(AbstractCondition):
     """True when a spacecraft is visible from a ground station.

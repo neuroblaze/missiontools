@@ -68,6 +68,25 @@ class _ConstCondition(AbstractCondition):
         return f"ConstCondition({self._value})"
 
 
+class _WindowCondition(AbstractCondition):
+    """Test helper: True inside a list of [start, end) windows (µs offsets)."""
+
+    def __init__(self, epoch, windows_us):
+        super().__init__(cache_size=0)
+        self._epoch = np.asarray(epoch, dtype="datetime64[us]")
+        self._windows = windows_us
+
+    def _compute(self, t):
+        t_off = (t - self._epoch).astype("timedelta64[us]").astype(np.int64)
+        result = np.zeros(len(t), dtype=bool)
+        for s, e in self._windows:
+            result |= (t_off >= s) & (t_off < e)
+        return result
+
+    def __repr__(self):
+        return f"WindowCondition(windows={self._windows})"
+
+
 class _DirectAtCondition(AbstractCondition):
     """Test helper: overrides at() directly, bypassing the cache."""
 
@@ -518,3 +537,92 @@ class TestCompositeConditionLogic:
     def test_repr_xor(self):
         c = XorCondition(_ConstCondition(True), _ConstCondition(False))
         assert "XorCondition" in repr(c)
+
+
+# ===========================================================================
+# AbstractCondition.intervals()
+# ===========================================================================
+
+
+class TestAbstractConditionIntervals:
+    def test_always_true_returns_single_interval(self):
+        c = _ConstCondition(True)
+        t0 = _EPOCH
+        t1 = _EPOCH + np.timedelta64(100, "s")
+        result = c.intervals(t0, t1)
+        assert len(result) == 1
+        assert result[0] == (t0, t1)
+
+    def test_always_false_returns_empty(self):
+        c = _ConstCondition(False)
+        t0 = _EPOCH
+        t1 = _EPOCH + np.timedelta64(100, "s")
+        result = c.intervals(t0, t1)
+        assert result == []
+
+    def test_single_window_in_middle(self):
+        c = _WindowCondition(_EPOCH, [(30_000_000, 70_000_000)])
+        t0 = _EPOCH
+        t1 = _EPOCH + np.timedelta64(100, "s")
+        result = c.intervals(t0, t1, max_step=np.timedelta64(5, "s"))
+        assert len(result) == 1
+        s, e = result[0]
+        assert s >= t0
+        assert e <= t1
+        assert int((s - _EPOCH) / np.timedelta64(1, "s")) <= 32
+        assert int((e - _EPOCH) / np.timedelta64(1, "s")) >= 68
+
+    def test_starts_true(self):
+        c = _WindowCondition(_EPOCH, [(0, 50_000_000)])
+        t0 = _EPOCH
+        t1 = _EPOCH + np.timedelta64(100, "s")
+        result = c.intervals(t0, t1, max_step=np.timedelta64(5, "s"))
+        assert len(result) == 1
+        s, e = result[0]
+        assert s == t0
+
+    def test_ends_true(self):
+        c = _WindowCondition(_EPOCH, [(50_000_000, 200_000_000)])
+        t0 = _EPOCH
+        t1 = _EPOCH + np.timedelta64(100, "s")
+        result = c.intervals(t0, t1, max_step=np.timedelta64(5, "s"))
+        assert len(result) == 1
+        s, e = result[0]
+        assert e == t1
+
+    def test_two_disjoint_windows(self):
+        c = _WindowCondition(
+            _EPOCH, [(10_000_000, 30_000_000), (60_000_000, 80_000_000)]
+        )
+        t0 = _EPOCH
+        t1 = _EPOCH + np.timedelta64(100, "s")
+        result = c.intervals(t0, t1, max_step=np.timedelta64(5, "s"))
+        assert len(result) == 2
+        assert result[0][0] < result[1][0]
+
+    def test_empty_window_returns_empty(self):
+        t0 = _EPOCH
+        t1 = _EPOCH + np.timedelta64(10, "s")
+        result = _ConstCondition(True).intervals(t0, t0)
+        assert result == []
+
+    def test_intervals_non_overlapping(self):
+        c = _WindowCondition(
+            _EPOCH, [(10_000_000, 40_000_000), (60_000_000, 90_000_000)]
+        )
+        t0 = _EPOCH
+        t1 = _EPOCH + np.timedelta64(100, "s")
+        result = c.intervals(t0, t1, max_step=np.timedelta64(5, "s"))
+        for i in range(len(result) - 1):
+            assert result[i][1] <= result[i + 1][0]
+
+    def test_sunlight_condition_produces_intervals(self):
+        cond = SunlightCondition(_SC)
+        t0 = _EPOCH
+        t1 = _EPOCH + np.timedelta64(6 * 3600, "s")
+        result = cond.intervals(t0, t1)
+        assert len(result) > 0
+        for s, e in result:
+            assert s >= t0
+            assert e <= t1
+            assert s < e

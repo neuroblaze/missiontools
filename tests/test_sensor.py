@@ -7,6 +7,7 @@ from missiontools import (
     TrackAttitudeLaw,
     AbstractAttitudeLaw,
     AbstractSensor,
+    AbstractCondition,
     ConicSensor,
     RectangularSensor,
 )
@@ -684,3 +685,73 @@ class TestConicSensorFovSpec:
         np.testing.assert_allclose(
             np.linalg.norm(spec["pointing_lvlh"]), 1.0, atol=1e-12
         )
+
+
+# ===========================================================================
+# Sensor condition property
+# ===========================================================================
+
+
+class _ConstCondition(AbstractCondition):
+    def __init__(self, value: bool):
+        super().__init__(cache_size=0)
+        self._value = value
+
+    def _compute(self, t):
+        return np.full(len(t), self._value)
+
+    def __repr__(self):
+        return f"ConstCondition({self._value})"
+
+
+class TestSensorCondition:
+    def test_default_condition_is_none(self):
+        s = ConicSensor(10.0, body_vector=[0, 0, 1])
+        assert s.condition is None
+
+    def test_condition_set_via_constructor(self):
+        c = _ConstCondition(True)
+        s = ConicSensor(10.0, body_vector=[0, 0, 1], condition=c)
+        assert s.condition is c
+
+    def test_condition_set_via_property(self):
+        s = ConicSensor(10.0, body_vector=[0, 0, 1])
+        c = _ConstCondition(True)
+        s.condition = c
+        assert s.condition is c
+
+    def test_condition_set_to_none(self):
+        s = ConicSensor(10.0, body_vector=[0, 0, 1], condition=_ConstCondition(True))
+        s.condition = None
+        assert s.condition is None
+
+    def test_condition_wrong_type_raises(self):
+        s = ConicSensor(10.0, body_vector=[0, 0, 1])
+        with pytest.raises(TypeError, match="condition"):
+            s.condition = "not a condition"
+
+    def test_condition_wrong_type_in_constructor_raises(self):
+        with pytest.raises(TypeError, match="condition"):
+            ConicSensor(10.0, body_vector=[0, 0, 1], condition="not a condition")
+
+    def test_rectangular_condition_via_constructor(self):
+        c = _ConstCondition(False)
+        s = RectangularSensor(10.0, 20.0, body_vector=[0, 0, 1], condition=c)
+        assert s.condition is c
+
+    def test_rectangular_condition_via_property(self):
+        s = RectangularSensor(10.0, 20.0, body_vector=[0, 0, 1])
+        c = _ConstCondition(True)
+        s.condition = c
+        assert s.condition is c
+
+    def test_repr_includes_condition(self):
+        c = _ConstCondition(True)
+        s = ConicSensor(10.0, body_vector=[0, 0, 1], condition=c)
+        r = repr(s)
+        assert "condition=" in r
+
+    def test_repr_omits_condition_when_none(self):
+        s = ConicSensor(10.0, body_vector=[0, 0, 1])
+        r = repr(s)
+        assert "condition=" not in r

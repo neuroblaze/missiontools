@@ -159,12 +159,12 @@ class Coverage:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _all_sensor_specs(self, t_start: np.datetime64) -> list:
+    def _all_sensor_specs(self, t_start: np.datetime64, t_end: np.datetime64) -> list:
         """Return a sensor-spec for every sensor, evaluated at *t_start*.
 
         Each spec encodes the spacecraft keplerian parameters, propagator type,
-        and the frozen LVLH FOV geometry assumed constant over the analysis
-        window.
+        the frozen LVLH FOV geometry assumed constant over the analysis
+        window, and optional active intervals from per-sensor conditions.
         """
         specs = []
         for sensor in self._sensors:
@@ -176,13 +176,17 @@ class Coverage:
             )
             r, v, t = state["r"][0], state["v"][0], state["t"][0]
             fov = sensor.fov_spec(r, v, t)
-            specs.append(
-                make_sensor_spec_from_fov(
-                    sc.keplerian_params,
-                    sc.propagator_type,
-                    fov,
-                )
+            spec = make_sensor_spec_from_fov(
+                sc.keplerian_params,
+                sc.propagator_type,
+                fov,
             )
+
+            if sensor.condition is not None:
+                intervals = sensor.condition.intervals(t_start, t_end)
+                spec = spec._replace(active_intervals=intervals)
+
+            specs.append(spec)
         return specs
 
     def _sza_rad(self) -> tuple[float | None, float | None]:
@@ -234,7 +238,7 @@ class Coverage:
         return coverage_fraction_multi(
             self._aoi.lat_rad,
             self._aoi.lon_rad,
-            self._all_sensor_specs(t_start),
+            self._all_sensor_specs(t_start, t_end),
             t_start,
             t_end,
             alt,
@@ -293,7 +297,7 @@ class Coverage:
         intervals = collect_access_intervals_multi(
             lat,
             lon,
-            self._all_sensor_specs(t_start),
+            self._all_sensor_specs(t_start, t_end),
             t_start,
             t_end,
             alt,
@@ -365,7 +369,7 @@ class Coverage:
         return pointwise_coverage_multi(
             self._aoi.lat_rad,
             self._aoi.lon_rad,
-            self._all_sensor_specs(t_start),
+            self._all_sensor_specs(t_start, t_end),
             t_start,
             t_end,
             alt,
@@ -410,7 +414,7 @@ class Coverage:
         return collect_access_intervals_multi(
             self._aoi.lat_rad,
             self._aoi.lon_rad,
-            self._all_sensor_specs(t_start),
+            self._all_sensor_specs(t_start, t_end),
             t_start,
             t_end,
             alt,
@@ -456,7 +460,7 @@ class Coverage:
         intervals = collect_access_intervals_multi(
             self._aoi.lat_rad,
             self._aoi.lon_rad,
-            self._all_sensor_specs(t_start),
+            self._all_sensor_specs(t_start, t_end),
             t_start,
             t_end,
             alt,

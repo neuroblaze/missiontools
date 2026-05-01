@@ -4,6 +4,7 @@ import pytest
 from missiontools import (
     Spacecraft,
     FixedAttitudeLaw,
+    AbstractCondition,
     ConicSensor,
     RectangularSensor,
     AoI,
@@ -466,3 +467,121 @@ class TestCoverageRectangularSensor:
         cov = Coverage(_aoi(), [s])
         result = cov.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
         assert 0.0 <= result["final_cumulative"] <= 1.0
+
+
+# ===========================================================================
+# Conditioned coverage
+# ===========================================================================
+
+
+class _ConstCondition(AbstractCondition):
+    def __init__(self, value: bool):
+        super().__init__(cache_size=0)
+        self._value = value
+
+    def _compute(self, t):
+        return np.full(len(t), self._value)
+
+    def __repr__(self):
+        return f"ConstCondition({self._value})"
+
+
+class _WindowCondition(AbstractCondition):
+    def __init__(self, epoch, windows_us):
+        super().__init__(cache_size=0)
+        self._epoch = np.asarray(epoch, dtype="datetime64[us]")
+        self._windows = windows_us
+
+    def _compute(self, t):
+        t_off = (t - self._epoch).astype("timedelta64[us]").astype(np.int64)
+        result = np.zeros(len(t), dtype=bool)
+        for s, e in self._windows:
+            result |= (t_off >= s) & (t_off < e)
+        return result
+
+    def __repr__(self):
+        return f"WindowCondition(windows={self._windows})"
+
+
+class TestConditionedCoverage:
+    def _make_attached(self):
+        sc = _sc()
+        s = ConicSensor(30.0, body_vector=[0, 0, 1])
+        sc.add_sensor(s)
+        return s
+
+    def test_always_true_condition_same_as_unconditioned(self):
+        s1 = self._make_attached()
+        s2 = self._make_attached()
+        s2.condition = _ConstCondition(True)
+        aoi = _aoi()
+        cov1 = Coverage(aoi, [s1])
+        cov2 = Coverage(aoi, [s2])
+        r1 = cov1.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        r2 = cov2.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        np.testing.assert_allclose(
+            r1["final_cumulative"], r2["final_cumulative"], atol=1e-6
+        )
+
+    def test_always_false_condition_zero_coverage(self):
+        s = self._make_attached()
+        s.condition = _ConstCondition(False)
+        cov = Coverage(_aoi(), [s])
+        result = cov.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        assert result["final_cumulative"] == 0.0
+        assert result["mean_fraction"] == 0.0
+
+    def test_always_false_pointwise_all_invisible(self):
+        s = self._make_attached()
+        s.condition = _ConstCondition(False)
+        aoi = _aoi()
+        cov = Coverage(aoi, [s])
+        result = cov.pointwise_coverage(_EPOCH, _T_END, max_step=_STEP)
+        assert not result["visible"].any()
+
+    def test_always_false_no_access_intervals(self):
+        s = self._make_attached()
+        s.condition = _ConstCondition(False)
+        aoi = _aoi()
+        cov = Coverage(aoi, [s])
+        result = cov.access_pointwise(_EPOCH, _T_END, max_step=_STEP)
+        for point_intervals in result:
+            assert point_intervals == []
+
+    def test_partial_condition_reduces_coverage(self):
+        s_full = self._make_attached()
+        s_partial = self._make_attached()
+        s_partial.condition = _WindowCondition(_EPOCH, [(0, 1800_000_000)])
+        aoi = _aoi()
+        cov_full = Coverage(aoi, [s_full])
+        cov_partial = Coverage(aoi, [s_partial])
+        r_full = cov_full.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        r_partial = cov_partial.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        assert r_partial["final_cumulative"] <= r_full["final_cumulative"] + 1e-9
+
+    def test_condition_via_constructor(self):
+        s = self._make_attached()
+        s.condition = _ConstCondition(True)
+        cov = Coverage(_aoi(), [s])
+        result = cov.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        assert 0.0 <= result["final_cumulative"] <= 1.0
+
+    def test_conditioned_revisit_time(self):
+        s = self._make_attached()
+        s.condition = _WindowCondition(_EPOCH, [(0, 1800_000_000)])
+        aoi = _aoi()
+        cov = Coverage(aoi, [s])
+        result = cov.revisit_time(_EPOCH, _T_END, max_step=_STEP)
+        assert "max_revisit" in result
+        assert "global_max" in result
+
+    def test_conditioned_revisit_pointwise(self):
+        s = self._make_attached()
+        s.condition = _WindowCondition(_EPOCH, [(0, 1800_000_000)])
+        aoi = _aoi()
+        cov = Coverage(aoi, [s])
+        result = cov.revisit_pointwise(_EPOCH, _T_END, max_step=_STEP)
+        assert isinstance(result, list)
+        assert len(result) == len(aoi)
+        for item in result:
+            assert isinstance(item, np.ndarray)

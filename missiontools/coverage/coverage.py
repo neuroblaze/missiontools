@@ -102,6 +102,7 @@ class SensorSpec(NamedTuple):
     u2_lvlh: npt.NDArray | None = None
     tan_theta1: float | None = None
     tan_theta2: float | None = None
+    active_intervals: list[tuple[np.datetime64, np.datetime64]] | None = None
 
 
 def make_sensor_spec(
@@ -196,7 +197,7 @@ def _compute_vis_batch_multi(
 
         if fov_type == "conic":
             pt_ecef = _pointing_ecef(spec.pointing_lvlh, r, v, t_batch)
-            vis |= _visibility(
+            sensor_vis = _visibility(
                 r,
                 t_batch,
                 gs_ecef,
@@ -209,7 +210,7 @@ def _compute_vis_batch_multi(
             pt_ecef = _pointing_ecef(spec.pointing_lvlh, r, v, t_batch)
             u1_ecef = _pointing_ecef(spec.u1_lvlh, r, v, t_batch)
             u2_ecef = _pointing_ecef(spec.u2_lvlh, r, v, t_batch)
-            vis |= _visibility(
+            sensor_vis = _visibility(
                 r,
                 t_batch,
                 gs_ecef,
@@ -222,7 +223,15 @@ def _compute_vis_batch_multi(
                 tan_theta2=spec.tan_theta2,
             )
         else:
-            vis |= _visibility(r, t_batch, gs_ecef, up, sin_el_min)
+            sensor_vis = _visibility(r, t_batch, gs_ecef, up, sin_el_min)
+
+        if spec.active_intervals is not None:
+            active = np.zeros(T, dtype=np.bool_)
+            for t0, t1 in spec.active_intervals:
+                active |= (t_batch >= t0) & (t_batch <= t1)
+            sensor_vis &= active[:, np.newaxis]
+
+        vis |= sensor_vis
 
     if use_sza:
         sun_e = _sun_ecef(t_batch)
