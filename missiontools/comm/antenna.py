@@ -614,6 +614,109 @@ class SymmetricAntenna(AbstractAntenna):
 
         return cls(angles_out, gains_out, **kwargs)
 
+    @classmethod
+    def from_s465(
+        cls,
+        diameter: float,
+        frequency: float,
+        main_lobe_model: bool = False,
+        **kwargs,
+    ) -> 'SymmetricAntenna':
+        """ITU-R S.465 reference Earth station antenna pattern.
+
+        Parameters
+        ----------
+        diameter : float
+            Reflector diameter (m).
+        frequency : float
+            Centre frequency (Hz).  Valid range per the Recommendation:
+            2–31 GHz.
+        main_lobe_model : bool, optional
+            If *False* (default), the canonical ITU-R S.465-6 sidelobe
+            envelope is used; the inner region (0° to φ_min) is completed
+            with a flat plateau at *G*_max.  If *True*, the smooth
+            parabolic main-lobe extension from APEREC013V01 is used,
+            producing a continuous pattern from boresight to 180°.
+        **kwargs
+            Mounting keyword arguments forwarded to
+            :class:`SymmetricAntenna`.
+
+        References
+        ----------
+        .. [1] ITU Radiocommunication Assembly, "Reference radiation
+               pattern of earth station antennas in the fixed-satellite
+               service for use in coordination and interference assessment
+               in the frequency range from 2 to 31 GHz," Recommendation
+               ITU-R S.465-6, Jan. 2010.  (RRECS.4656201001IPDFE)
+        .. [2] ITU-R BR Software, "Recommendation ITU-R S.465-5 reference
+               Earth station antenna pattern for earth stations coordinated
+               after 1993 in the frequency range from 2 to about 30 GHz,"
+               APEREC013V01, Apr. 2022.
+        """
+        _C = 299_792_458.0
+        D = float(diameter)
+        lam = _C / float(frequency)
+        dl = D / lam  # D/λ
+
+        eta = 0.7  # BR-software default efficiency
+        g_peak_lin = eta * (np.pi * dl) ** 2
+        g_peak_dbi = 10.0 * np.log10(g_peak_lin)
+
+        if main_lobe_model:
+            # APEREC013V01 smooth main-lobe extension
+            g1 = 32.0 if dl > 100 else -18.0 + 25.0 * np.log10(dl)
+            phi_r = 1.0 if dl > 100 else 100.0 / dl        # degrees
+            phi_m = (20.0 / dl) * np.sqrt(max(g_peak_dbi - g1, 0.0))
+            phi_b = 10.0 ** (42.0 / 25.0)                  # ≈ 48.0°
+
+            # Parabolic main lobe: 0 → φ_m
+            phi_ml = np.linspace(0.0, phi_m, 200, endpoint=False)
+            g_ml = g_peak_dbi - 2.5e-3 * (dl * phi_ml) ** 2
+            parts_a: list[npt.NDArray[np.floating]] = [phi_ml]
+            parts_g: list[npt.NDArray[np.floating]] = [g_ml]
+
+            # Transition plateau: φ_m → φ_r  (may be zero-width)
+            if phi_r > phi_m:
+                parts_a.append(np.array([phi_m, phi_r]))
+                parts_g.append(np.array([g1, g1]))
+
+            # Sidelobe envelope: φ_r → φ_b
+            phi_sl = np.linspace(phi_r, phi_b, 300, endpoint=False)
+            parts_a.append(phi_sl)
+            parts_g.append(32.0 - 25.0 * np.log10(np.maximum(phi_sl, 1e-10)))
+
+            # Far sidelobe: φ_b → 180°
+            parts_a.append(np.array([phi_b, 180.0]))
+            parts_g.append(np.array([-10.0, -10.0]))
+
+        else:
+            # Canonical S.465-6 sidelobe envelope
+            if dl >= 50:
+                phi_min = max(1.0, 100.0 / dl)
+            else:
+                phi_min = max(2.0, 114.0 * (lam / D) ** 1.09)
+
+            phi_b = 48.0  # degrees
+
+            # Flat main lobe: 0 → φ_min
+            parts_a = [np.array([0.0, phi_min])]
+            parts_g = [np.array([g_peak_dbi, g_peak_dbi])]
+
+            # Sidelobe envelope: φ_min → 48°
+            phi_sl = np.linspace(phi_min, phi_b, 500, endpoint=False)
+            parts_a.append(phi_sl)
+            parts_g.append(32.0 - 25.0 * np.log10(phi_sl))
+
+            # Far sidelobe: 48° → 180°
+            parts_a.append(np.array([phi_b, 180.0]))
+            parts_g.append(np.array([-10.0, -10.0]))
+
+        angles_out = np.concatenate(parts_a)
+        gains_out = np.concatenate(parts_g)
+
+        _, uniq = np.unique(angles_out, return_index=True)
+        return cls(angles_out[uniq], gains_out[uniq], **kwargs)
+
     def _pattern_gain(
         self,
         off_boresight_rad: npt.NDArray[np.floating],

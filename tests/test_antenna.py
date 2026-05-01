@@ -600,6 +600,106 @@ class TestSymmetricAntennaFactories:
         g2 = SymmetricAntenna.from_parabolic(D, f, eff=0.7, body_vector=[0, 0, 1]).peak_gain_dbi
         assert g2 > g1
 
+    # --- from_s465 ---
+
+    def test_s465_canonical_peak_gain(self):
+        """Canonical: gain at boresight equals G_max = 10log10(0.7·(π·D/λ)²)."""
+        D, f = 3.0, 14e9
+        lam = 299_792_458.0 / f
+        expected = 10.0 * np.log10(0.7 * (np.pi * D / lam) ** 2)
+        ant = SymmetricAntenna.from_s465(D, f, body_vector=[0, 0, 1])
+        assert abs(ant.gains_dbi[0] - expected) < 0.01
+
+    def test_s465_canonical_sidelobe_formula(self):
+        """Canonical: gain at 10° follows 32 − 25·log10(10) = 7 dBi for large dish."""
+        D, f = 3.0, 14e9
+        ant = SymmetricAntenna.from_s465(D, f, body_vector=[0, 0, 1])
+        g_10 = float(np.interp(np.radians(10.0), np.radians(ant.angles_deg), ant.gains_dbi))
+        assert abs(g_10 - (32.0 - 25.0 * np.log10(10.0))) < 0.1
+
+    def test_s465_canonical_far_sidelobe(self):
+        """Canonical: gain at 90° and 150° is −10 dBi."""
+        ant = SymmetricAntenna.from_s465(3.0, 14e9, body_vector=[0, 0, 1])
+        for phi in (90.0, 150.0):
+            g = float(np.interp(np.radians(phi), np.radians(ant.angles_deg), ant.gains_dbi))
+            assert abs(g - (-10.0)) < 1e-6
+
+    def test_s465_canonical_phi_min_large(self):
+        """Canonical, D/λ ≥ 50: sidelobe formula applies for φ well above φ_min."""
+        D, f = 3.0, 14e9
+        lam = 299_792_458.0 / f
+        dl = D / lam
+        phi_min = max(1.0, 100.0 / dl)
+        ant = SymmetricAntenna.from_s465(D, f, body_vector=[0, 0, 1])
+        # Check at 5·φ_min to be well clear of the flat/sidelobe boundary
+        phi_test = phi_min * 5.0
+        g_table = float(np.interp(
+            np.radians(phi_test), np.radians(ant.angles_deg), ant.gains_dbi,
+        ))
+        g_formula = 32.0 - 25.0 * np.log10(phi_test)
+        assert abs(g_table - g_formula) < 0.1
+
+    def test_s465_canonical_phi_min_small(self):
+        """Canonical, D/λ < 50: φ_min = max(2°, 114·(λ/D)^1.09)."""
+        D, f = 0.3, 14e9      # D/λ ≈ 14
+        lam = 299_792_458.0 / f
+        phi_min = max(2.0, 114.0 * (lam / D) ** 1.09)
+        ant = SymmetricAntenna.from_s465(D, f, body_vector=[0, 0, 1])
+        # First angle in sidelobe region matches formula value
+        angles = ant.angles_deg
+        idx = np.searchsorted(angles, phi_min)
+        g_table = float(np.interp(
+            np.radians(phi_min * 1.05), np.radians(angles), ant.gains_dbi,
+        ))
+        g_formula = 32.0 - 25.0 * np.log10(phi_min * 1.05)
+        assert abs(g_table - g_formula) < 0.5
+
+    def test_s465_smooth_peak_gain(self):
+        """Smooth model: gain at boresight equals G_max."""
+        D, f = 3.0, 14e9
+        lam = 299_792_458.0 / f
+        expected = 10.0 * np.log10(0.7 * (np.pi * D / lam) ** 2)
+        ant = SymmetricAntenna.from_s465(D, f, main_lobe_model=True, body_vector=[0, 0, 1])
+        assert abs(ant.gains_dbi[0] - expected) < 0.01
+
+    def test_s465_smooth_parabolic_region(self):
+        """Smooth model: mid-main-lobe gain matches G_max − 2.5e-3·(D/λ·φ)²."""
+        D, f = 3.0, 14e9
+        lam = 299_792_458.0 / f
+        dl = D / lam
+        g_max = 10.0 * np.log10(0.7 * (np.pi * dl) ** 2)
+        g1 = 32.0  # dl > 100
+        phi_m = (20.0 / dl) * np.sqrt(g_max - g1)
+        phi_test = phi_m / 2.0
+        ant = SymmetricAntenna.from_s465(D, f, main_lobe_model=True, body_vector=[0, 0, 1])
+        g_table = float(np.interp(
+            np.radians(phi_test), np.radians(ant.angles_deg), ant.gains_dbi,
+        ))
+        g_formula = g_max - 2.5e-3 * (dl * phi_test) ** 2
+        assert abs(g_table - g_formula) < 0.05
+
+    def test_s465_smooth_far_sidelobe(self):
+        """Smooth model: gain at 90° is −10 dBi."""
+        ant = SymmetricAntenna.from_s465(3.0, 14e9, main_lobe_model=True, body_vector=[0, 0, 1])
+        g = float(np.interp(np.radians(90.0), np.radians(ant.angles_deg), ant.gains_dbi))
+        assert abs(g - (-10.0)) < 1e-6
+
+    def test_s465_smooth_and_canonical_agree_far(self):
+        """Both variants give the same gain at 30° (deep in sidelobe region)."""
+        D, f = 3.0, 14e9
+        ant_c = SymmetricAntenna.from_s465(D, f, body_vector=[0, 0, 1])
+        ant_s = SymmetricAntenna.from_s465(D, f, main_lobe_model=True, body_vector=[0, 0, 1])
+        g_c = float(np.interp(np.radians(30.0), np.radians(ant_c.angles_deg), ant_c.gains_dbi))
+        g_s = float(np.interp(np.radians(30.0), np.radians(ant_s.angles_deg), ant_s.gains_dbi))
+        assert abs(g_c - g_s) < 0.01
+
+    def test_s465_table_covers_180(self):
+        """Both variants: pattern table extends to 180°."""
+        for mlm in (False, True):
+            ant = SymmetricAntenna.from_s465(3.0, 14e9, main_lobe_model=mlm,
+                                             body_vector=[0, 0, 1])
+            assert ant.angles_deg[-1] == 180.0
+
 
 # ===================================================================
 # Top-level imports
