@@ -11,7 +11,7 @@ for each pointing mode:
   :meth:`~FixedAttitudeLaw.nadir` creates the most common configuration
   (body-z toward the Earth centre).
 - :class:`TrackAttitudeLaw` — boresight pointing toward a target
-  :class:`~missiontools.Spacecraft` at every timestep.
+  :class:`~missiontools.Spacecraft` or :class:`~missiontools.GroundStation`.
 - :class:`CustomAttitudeLaw` — full 3-DOF control via a user-supplied
   quaternion callback.
 - :class:`LimbAttitudeLaw` — body-frame vector aligned with the ray
@@ -35,16 +35,20 @@ Planned functionality
 - Sensor modelling (star tracker, sun sensor, magnetometer)
 """
 
-from .attitude_law import (AbstractAttitudeLaw,
-                           FixedAttitudeLaw,
-                           TrackAttitudeLaw,
-                           CustomAttitudeLaw,
-                           LimbAttitudeLaw,
-                           ConditionAttitudeLaw)
+from .attitude_law import (
+    AbstractAttitudeLaw,
+    FixedAttitudeLaw,
+    TrackAttitudeLaw,
+    CustomAttitudeLaw,
+    LimbAttitudeLaw,
+    ConditionAttitudeLaw,
+)
 
-__all__ = ['AbstractAttitudeLaw',
-           'FixedAttitudeLaw',
-           'TrackAttitudeLaw',
-           'CustomAttitudeLaw',
-           'LimbAttitudeLaw',
-           'ConditionAttitudeLaw']
+__all__ = [
+    "AbstractAttitudeLaw",
+    "FixedAttitudeLaw",
+    "TrackAttitudeLaw",
+    "CustomAttitudeLaw",
+    "LimbAttitudeLaw",
+    "ConditionAttitudeLaw",
+]

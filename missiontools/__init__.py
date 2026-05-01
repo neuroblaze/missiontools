@@ -58,7 +58,8 @@ Classes
     Fixed-frame attitude law (LVLH, ECI, or ECEF).  Includes
     :meth:`~FixedAttitudeLaw.nadir` convenience constructor.
 :class:`TrackAttitudeLaw`
-    Target-tracking attitude law.
+    Target-tracking attitude law.  Tracks a :class:`Spacecraft` or
+    :class:`GroundStation`.
 :class:`CustomAttitudeLaw`
     User-supplied quaternion callback attitude law.
 :class:`LimbAttitudeLaw`
