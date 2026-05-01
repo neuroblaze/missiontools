@@ -49,6 +49,9 @@ Classes
 :class:`ConicSensor`
     An instrument with a conical field of view, attached to a spacecraft
     via :meth:`~Spacecraft.add_sensor`.
+:class:`RectangularSensor`
+    An instrument with a rectangular (pyramidal) field of view defined by
+    two half-angles, attached to a spacecraft via :meth:`~Spacecraft.add_sensor`.
 :class:`AbstractAttitudeLaw`
     Abstract base class for spacecraft/sensor pointing laws.
 :class:`FixedAttitudeLaw`
@@ -141,6 +144,7 @@ __all__ = [
     "Spacecraft",
     "AbstractSensor",
     "ConicSensor",
+    "RectangularSensor",
     "AbstractAttitudeLaw",
     "FixedAttitudeLaw",
     "TrackAttitudeLaw",
@@ -195,7 +199,7 @@ from .condition import (
 )
 from .ground_station import GroundStation
 from .aoi import AoI
-from .sensor import AbstractSensor, ConicSensor
+from .sensor import AbstractSensor, ConicSensor, RectangularSensor
 from .coverage_analysis import Coverage
 from .power import AbstractSolarConfig, NormalVectorSolarConfig
 from .thermal import (

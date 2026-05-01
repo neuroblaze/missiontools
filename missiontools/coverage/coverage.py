@@ -1,5 +1,6 @@
 import re as _re
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 import numpy.typing as npt
@@ -14,112 +15,167 @@ from ..orbit.constants import EARTH_MEAN_RADIUS
 # Bundled Natural Earth geodata paths
 # ---------------------------------------------------------------------------
 
-_GEODATA_DIR = Path(__file__).parent / 'geodata'
-_NE_ADM0     = _GEODATA_DIR / 'ne_map_units'        / 'ne_50m_admin_0_map_units.shp'
-_NE_ADM1     = _GEODATA_DIR / 'ne_states_provinces' / 'ne_50m_admin_1_states_provinces.shp'
+_GEODATA_DIR = Path(__file__).parent / "geodata"
+_NE_ADM0 = _GEODATA_DIR / "ne_map_units" / "ne_50m_admin_0_map_units.shp"
+_NE_ADM1 = _GEODATA_DIR / "ne_states_provinces" / "ne_50m_admin_1_states_provinces.shp"
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _fibonacci_sphere(n: int) -> tuple[npt.NDArray, npt.NDArray]:
     """Equal-area Fibonacci lattice: n points on the unit sphere (radians)."""
     if n == 1:
         return np.array([0.0]), np.array([0.0])
     phi = (1.0 + np.sqrt(5.0)) / 2.0
-    i   = np.arange(n, dtype=np.float64)
+    i = np.arange(n, dtype=np.float64)
     lat = np.arcsin(np.clip(2.0 * i / (n - 1) - 1.0, -1.0, 1.0))
-    lon = (2.0 * np.pi * i / phi) % (2.0 * np.pi) - np.pi   # → (−π, π]
+    lon = (2.0 * np.pi * i / phi) % (2.0 * np.pi) - np.pi  # → (−π, π]
     return lat, lon
 
 
-def _pip(polygon: npt.NDArray,
-         lat:     npt.NDArray,
-         lon:     npt.NDArray) -> npt.NDArray[np.bool_]:
+def _pip(
+    polygon: npt.NDArray, lat: npt.NDArray, lon: npt.NDArray
+) -> npt.NDArray[np.bool_]:
     """Planar point-in-polygon test in lat/lon space (radians)."""
     # MplPath uses (x, y) = (lon, lat)
     path = _MplPath(polygon[:, ::-1])
     return path.contains_points(np.column_stack([lon, lat]))
 
 
-def _build_gs(lat: npt.NDArray,
-              lon: npt.NDArray,
-              alt: float | npt.NDArray,
-              ) -> tuple[npt.NDArray, npt.NDArray]:
+def _build_gs(
+    lat: npt.NDArray,
+    lon: npt.NDArray,
+    alt: float | npt.NDArray,
+) -> tuple[npt.NDArray, npt.NDArray]:
     """Return ground-point ECEF positions (M,3) and geodetic up-vectors (M,3)."""
     lat = np.asarray(lat, dtype=np.float64)
     lon = np.asarray(lon, dtype=np.float64)
-    gs_ecef = geodetic_to_ecef(lat, lon, alt)           # (M, 3)
-    up = np.stack([np.cos(lat) * np.cos(lon),
-                   np.cos(lat) * np.sin(lon),
-                   np.sin(lat)], axis=-1)                # (M, 3)
+    gs_ecef = geodetic_to_ecef(lat, lon, alt)  # (M, 3)
+    up = np.stack(
+        [np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)], axis=-1
+    )  # (M, 3)
     return gs_ecef, up
 
 
-def _sun_ecef(t_arr: npt.NDArray) -> npt.NDArray:   # (T, 3)
+def _sun_ecef(t_arr: npt.NDArray) -> npt.NDArray:  # (T, 3)
     """Sun unit vector in ECEF at each timestep."""
     return eci_to_ecef(sun_vec_eci(t_arr), t_arr)
 
 
 def _parse_constraints(
-        fov_pointing_lvlh, fov_half_angle, sza_max, sza_min,
+    fov_pointing_lvlh,
+    fov_half_angle,
+    sza_max,
+    sza_min,
 ) -> tuple:
     """Validate FOV and SZA parameters; return precomputed values."""
     _fov_given = (fov_pointing_lvlh is not None, fov_half_angle is not None)
     if any(_fov_given) and not all(_fov_given):
-        raise ValueError("fov_pointing_lvlh and fov_half_angle must both be "
-                         "provided together")
+        raise ValueError(
+            "fov_pointing_lvlh and fov_half_angle must both be provided together"
+        )
     use_fov = all(_fov_given)
     pointing_lvlh_norm = cos_fov = None
     if use_fov:
-        pointing_lvlh_norm = (np.asarray(fov_pointing_lvlh, dtype=np.float64)
-                              / np.linalg.norm(fov_pointing_lvlh))
+        pointing_lvlh_norm = np.asarray(
+            fov_pointing_lvlh, dtype=np.float64
+        ) / np.linalg.norm(fov_pointing_lvlh)
         cos_fov = float(np.cos(fov_half_angle))
 
-    use_sza      = sza_max is not None or sza_min is not None
+    use_sza = sza_max is not None or sza_min is not None
     cos_sza_max_ = float(np.cos(sza_max)) if sza_max is not None else None
     cos_sza_min_ = float(np.cos(sza_min)) if sza_min is not None else None
 
     return use_fov, pointing_lvlh_norm, cos_fov, use_sza, cos_sza_max_, cos_sza_min_
 
 
+class SensorSpec(NamedTuple):
+    keplerian_params: dict
+    propagator_type: str
+    fov_type: str
+    pointing_lvlh: npt.NDArray | None
+    cos_fov: float | None = None
+    u1_lvlh: npt.NDArray | None = None
+    u2_lvlh: npt.NDArray | None = None
+    tan_theta1: float | None = None
+    tan_theta2: float | None = None
+
+
 def make_sensor_spec(
-        keplerian_params:  dict,
-        propagator_type:   str,
-        fov_pointing_lvlh: npt.NDArray | None,
-        fov_half_angle:    float | None,
-) -> tuple:
+    keplerian_params: dict,
+    propagator_type: str,
+    fov_pointing_lvlh: npt.NDArray | None,
+    fov_half_angle: float | None,
+) -> SensorSpec:
     """Convert per-sensor params into a compact spec tuple.
 
-    Returns ``(keplerian_params, propagator_type, use_fov, pointing_lvlh_norm, cos_fov)``.
+    Returns a :class:`SensorSpec` for a conical FOV sensor.
     """
     _fov_given = (fov_pointing_lvlh is not None, fov_half_angle is not None)
     if any(_fov_given) and not all(_fov_given):
-        raise ValueError("fov_pointing_lvlh and fov_half_angle must both be "
-                         "provided together")
+        raise ValueError(
+            "fov_pointing_lvlh and fov_half_angle must both be provided together"
+        )
     if fov_pointing_lvlh is not None and fov_half_angle is not None:
-        pointing_norm = (np.asarray(fov_pointing_lvlh, dtype=np.float64)
-                         / np.linalg.norm(fov_pointing_lvlh))
+        pointing_norm = np.asarray(
+            fov_pointing_lvlh, dtype=np.float64
+        ) / np.linalg.norm(fov_pointing_lvlh)
         cos_fov = float(np.cos(fov_half_angle))
-        use_fov = True
-    else:
-        pointing_norm = None
-        cos_fov       = None
-        use_fov       = False
-    return (keplerian_params, propagator_type, use_fov, pointing_norm, cos_fov)
+        return SensorSpec(
+            keplerian_params, propagator_type, "conic", pointing_norm, cos_fov=cos_fov
+        )
+    return SensorSpec(keplerian_params, propagator_type, "none", None)
+
+
+def make_sensor_spec_from_fov(
+    keplerian_params: dict,
+    propagator_type: str,
+    fov: dict,
+) -> SensorSpec:
+    """Build a :class:`SensorSpec` from a sensor's ``fov_spec()`` dict."""
+    fov_type = fov["fov_type"]
+    pointing = np.asarray(fov["pointing_lvlh"], dtype=np.float64)
+    pointing = pointing / np.linalg.norm(pointing)
+
+    if fov_type == "conic":
+        return SensorSpec(
+            keplerian_params,
+            propagator_type,
+            "conic",
+            pointing,
+            cos_fov=fov["cos_half_angle"],
+        )
+
+    if fov_type == "rectangular":
+        u1 = np.asarray(fov["u1_lvlh"], dtype=np.float64)
+        u2 = np.asarray(fov["u2_lvlh"], dtype=np.float64)
+        return SensorSpec(
+            keplerian_params,
+            propagator_type,
+            "rectangular",
+            pointing,
+            u1_lvlh=u1,
+            u2_lvlh=u2,
+            tan_theta1=fov["tan_theta1"],
+            tan_theta2=fov["tan_theta2"],
+        )
+
+    raise ValueError(f"Unknown fov_type: {fov_type!r}")
 
 
 def _compute_vis_batch_multi(
-        t_batch:       npt.NDArray,
-        sensor_specs:  list,
-        gs_ecef:       npt.NDArray,
-        up:            npt.NDArray,
-        sin_el_min:    float,
-        use_sza:       bool,
-        cos_sza_max_:  float | None,
-        cos_sza_min_:  float | None,
-) -> npt.NDArray[np.bool_]:              # (T, M)
+    t_batch: npt.NDArray,
+    sensor_specs: list,
+    gs_ecef: npt.NDArray,
+    up: npt.NDArray,
+    sin_el_min: float,
+    use_sza: bool,
+    cos_sza_max_: float | None,
+    cos_sza_min_: float | None,
+) -> npt.NDArray[np.bool_]:  # (T, M)
     """Combined visibility for multiple sensors (union of FOVs).
 
     For each sensor spec, propagates its spacecraft and computes elevation + FOV
@@ -130,17 +186,47 @@ def _compute_vis_batch_multi(
     M = gs_ecef.shape[0]
     vis = np.zeros((T, M), dtype=np.bool_)
 
-    for kp, prop_type, use_fov, pointing_norm, cos_fov in sensor_specs:
-        r, v    = cached_propagate_analytical(t_batch, **kp, propagator_type=prop_type)
-        pt_ecef = (_pointing_ecef(pointing_norm, r, v, t_batch)
-                   if use_fov else None)
-        vis |= _visibility(r, t_batch, gs_ecef, up, sin_el_min,
-                           pointing_ecef=pt_ecef,
-                           cos_fov=cos_fov if use_fov else None)
+    for spec in sensor_specs:
+        kp, prop_type, fov_type = (
+            spec.keplerian_params,
+            spec.propagator_type,
+            spec.fov_type,
+        )
+        r, v = cached_propagate_analytical(t_batch, **kp, propagator_type=prop_type)
+
+        if fov_type == "conic":
+            pt_ecef = _pointing_ecef(spec.pointing_lvlh, r, v, t_batch)
+            vis |= _visibility(
+                r,
+                t_batch,
+                gs_ecef,
+                up,
+                sin_el_min,
+                pointing_ecef=pt_ecef,
+                cos_fov=spec.cos_fov,
+            )
+        elif fov_type == "rectangular":
+            pt_ecef = _pointing_ecef(spec.pointing_lvlh, r, v, t_batch)
+            u1_ecef = _pointing_ecef(spec.u1_lvlh, r, v, t_batch)
+            u2_ecef = _pointing_ecef(spec.u2_lvlh, r, v, t_batch)
+            vis |= _visibility(
+                r,
+                t_batch,
+                gs_ecef,
+                up,
+                sin_el_min,
+                pointing_ecef=pt_ecef,
+                u1_ecef=u1_ecef,
+                u2_ecef=u2_ecef,
+                tan_theta1=spec.tan_theta1,
+                tan_theta2=spec.tan_theta2,
+            )
+        else:
+            vis |= _visibility(r, t_batch, gs_ecef, up, sin_el_min)
 
     if use_sza:
-        sun_e   = _sun_ecef(t_batch)
-        cos_sza = np.einsum('ti,mi->tm', sun_e, up)
+        sun_e = _sun_ecef(t_batch)
+        cos_sza = np.einsum("ti,mi->tm", sun_e, up)
         if cos_sza_max_ is not None:
             vis &= cos_sza >= cos_sza_max_
         if cos_sza_min_ is not None:
@@ -150,69 +236,94 @@ def _compute_vis_batch_multi(
 
 
 def _compute_vis_batch(
-        t_batch,
-        keplerian_params:  dict,
-        propagator_type:   str,
-        gs_ecef:           npt.NDArray,
-        up:                npt.NDArray,
-        sin_el_min:        float,
-        use_fov:           bool,
-        pointing_lvlh_norm: npt.NDArray | None,
-        cos_fov:           float | None,
-        use_sza:           bool,
-        cos_sza_max_:      float | None,
-        cos_sza_min_:      float | None,
-) -> npt.NDArray[np.bool_]:              # (T, M)
+    t_batch,
+    keplerian_params: dict,
+    propagator_type: str,
+    gs_ecef: npt.NDArray,
+    up: npt.NDArray,
+    sin_el_min: float,
+    use_fov: bool,
+    pointing_lvlh_norm: npt.NDArray | None,
+    cos_fov: float | None,
+    use_sza: bool,
+    cos_sza_max_: float | None,
+    cos_sza_min_: float | None,
+) -> npt.NDArray[np.bool_]:  # (T, M)
     """Propagate one batch and return the visibility matrix (single sensor)."""
-    spec = (keplerian_params, propagator_type, use_fov, pointing_lvlh_norm, cos_fov)
-    return _compute_vis_batch_multi(t_batch, [spec], gs_ecef, up, sin_el_min,
-                                    use_sza, cos_sza_max_, cos_sza_min_)
+    if use_fov:
+        spec = SensorSpec(
+            keplerian_params,
+            propagator_type,
+            "conic",
+            pointing_lvlh_norm,
+            cos_fov=cos_fov,
+        )
+    else:
+        spec = SensorSpec(keplerian_params, propagator_type, "none", None)
+    return _compute_vis_batch_multi(
+        t_batch, [spec], gs_ecef, up, sin_el_min, use_sza, cos_sza_max_, cos_sza_min_
+    )
 
 
-def _pointing_ecef(pointing_lvlh: npt.NDArray,   # (3,) unit vector in LVLH
-                   r_eci:         npt.NDArray,   # (T, 3)
-                   v_eci:         npt.NDArray,   # (T, 3)
-                   t_arr:         npt.NDArray,   # (T,) datetime64[us]
-                   ) -> npt.NDArray:             # (T, 3)
+def _pointing_ecef(
+    pointing_lvlh: npt.NDArray,  # (3,) unit vector in LVLH
+    r_eci: npt.NDArray,  # (T, 3)
+    v_eci: npt.NDArray,  # (T, 3)
+    t_arr: npt.NDArray,  # (T,) datetime64[us]
+) -> npt.NDArray:  # (T, 3)
     """Convert a fixed LVLH pointing direction to ECEF at each timestep."""
-    T     = len(t_arr)
+    T = len(t_arr)
     p_eci = lvlh_to_eci(np.tile(pointing_lvlh, (T, 1)), r_eci, v_eci)
     return eci_to_ecef(p_eci, t_arr)
 
 
-def _visibility(r_eci:          npt.NDArray,         # (T, 3)
-                t_arr:          npt.NDArray,         # (T,) datetime64[us]
-                gs_ecef:        npt.NDArray,         # (M, 3)
-                up:             npt.NDArray,         # (M, 3)
-                sin_el_min:     float,
-                pointing_ecef:  npt.NDArray | None = None,  # (T, 3)
-                cos_fov:        float | None = None,
-                sun_ecef:       npt.NDArray | None = None,  # (T, 3)
-                cos_sza_max:    float | None = None,
-                cos_sza_min:    float | None = None,
-                ) -> npt.NDArray[np.bool_]:          # (T, M)
+def _visibility(
+    r_eci: npt.NDArray,  # (T, 3)
+    t_arr: npt.NDArray,  # (T,) datetime64[us]
+    gs_ecef: npt.NDArray,  # (M, 3)
+    up: npt.NDArray,  # (M, 3)
+    sin_el_min: float,
+    pointing_ecef: npt.NDArray | None = None,  # (T, 3)
+    cos_fov: float | None = None,
+    u1_ecef: npt.NDArray | None = None,  # (T, 3) rectangular perp axis 1
+    u2_ecef: npt.NDArray | None = None,  # (T, 3) rectangular perp axis 2
+    tan_theta1: float | None = None,
+    tan_theta2: float | None = None,
+    sun_ecef: npt.NDArray | None = None,  # (T, 3)
+    cos_sza_max: float | None = None,
+    cos_sza_min: float | None = None,
+) -> npt.NDArray[np.bool_]:  # (T, M)
     """Vectorised visibility: T satellite positions × M ground points.
 
     Optional constraints (each ANDed with the elevation mask):
 
-    * ``pointing_ecef`` / ``cos_fov`` — sensor FOV cone in ECEF
+    * ``pointing_ecef`` / ``cos_fov`` — conical FOV in ECEF
+    * ``pointing_ecef`` / ``u1_ecef`` / ``u2_ecef`` / ``tan_theta1`` /
+      ``tan_theta2`` — rectangular (pyramidal) FOV in ECEF
     * ``sun_ecef`` / ``cos_sza_max`` / ``cos_sza_min`` — solar zenith angle
     """
-    r_ecef  = eci_to_ecef(r_eci, t_arr)                               # (T, 3)
-    los     = r_ecef[:, np.newaxis, :] - gs_ecef[np.newaxis, :, :]   # (T, M, 3)
-    norm    = np.maximum(np.linalg.norm(los, axis=2, keepdims=True), 1e-10)
-    los_hat = los / norm                                               # (T, M, 3)
-    sin_el  = np.einsum('tmi,mi->tm', los_hat, up)                    # (T, M)
-    vis     = sin_el >= sin_el_min                                     # (T, M)
+    r_ecef = eci_to_ecef(r_eci, t_arr)  # (T, 3)
+    los = r_ecef[:, np.newaxis, :] - gs_ecef[np.newaxis, :, :]  # (T, M, 3)
+    norm = np.maximum(np.linalg.norm(los, axis=2, keepdims=True), 1e-10)
+    los_hat = los / norm  # (T, M, 3)
+    sin_el = np.einsum("tmi,mi->tm", los_hat, up)  # (T, M)
+    vis = sin_el >= sin_el_min  # (T, M)
 
-    if pointing_ecef is not None:
-        # dot(sat→ground, pointing) = dot(-los_hat, pointing_ecef)
-        fov_cos = np.einsum('tmi,ti->tm', -los_hat, pointing_ecef)    # (T, M)
-        vis    &= fov_cos >= cos_fov
+    if pointing_ecef is not None and cos_fov is not None:
+        fov_cos = np.einsum("tmi,ti->tm", -los_hat, pointing_ecef)  # (T, M)
+        vis &= fov_cos >= cos_fov
+
+    if pointing_ecef is not None and u1_ecef is not None:
+        d_along = np.einsum("tmi,ti->tm", -los_hat, pointing_ecef)
+        d_perp1 = np.einsum("tmi,ti->tm", -los_hat, u1_ecef)
+        d_perp2 = np.einsum("tmi,ti->tm", -los_hat, u2_ecef)
+        safe_along = np.where(d_along > 0, d_along, 1.0)
+        vis &= d_along > 0
+        vis &= np.abs(d_perp1) <= tan_theta1 * safe_along
+        vis &= np.abs(d_perp2) <= tan_theta2 * safe_along
 
     if sun_ecef is not None:
-        # cos(SZA) = dot(sun_ecef, up); cos decreasing so ≤ SZA ↔ ≥ cos
-        cos_sza = np.einsum('ti,mi->tm', sun_ecef, up)                # (T, M)
+        cos_sza = np.einsum("ti,mi->tm", sun_ecef, up)  # (T, M)
         if cos_sza_max is not None:
             vis &= cos_sza >= cos_sza_max
         if cos_sza_min is not None:
@@ -221,15 +332,16 @@ def _visibility(r_eci:          npt.NDArray,         # (T, 3)
     return vis
 
 
-def _make_offsets(t_start:  np.datetime64,
-                  t_end:    np.datetime64,
-                  max_step: np.timedelta64,
-                  ) -> tuple[npt.NDArray[np.int64], np.datetime64]:
+def _make_offsets(
+    t_start: np.datetime64,
+    t_end: np.datetime64,
+    max_step: np.timedelta64,
+) -> tuple[npt.NDArray[np.int64], np.datetime64]:
     """Integer µs offsets from t_start, always including t_end."""
-    t_start   = np.asarray(t_start, dtype='datetime64[us]')
-    t_end     = np.asarray(t_end,   dtype='datetime64[us]')
-    total_us  = int((t_end   - t_start) / np.timedelta64(1, 'us'))
-    step_us   = int(max_step / np.timedelta64(1, 'us'))
+    t_start = np.asarray(t_start, dtype="datetime64[us]")
+    t_end = np.asarray(t_end, dtype="datetime64[us]")
+    total_us = int((t_end - t_start) / np.timedelta64(1, "us"))
+    step_us = int(max_step / np.timedelta64(1, "us"))
     if total_us <= 0 or step_us <= 0:
         return np.array([], dtype=np.int64), t_start
     offs = np.arange(0, total_us + 1, step_us, dtype=np.int64)
@@ -239,38 +351,40 @@ def _make_offsets(t_start:  np.datetime64,
 
 
 def _detect_transitions(
-        vis_batch: npt.NDArray[np.bool_],    # (T, M)
-        in_access: npt.NDArray[np.bool_],    # (M,)
-        t_batch:   npt.NDArray,              # (T,) datetime64[us]
+    vis_batch: npt.NDArray[np.bool_],  # (T, M)
+    in_access: npt.NDArray[np.bool_],  # (M,)
+    t_batch: npt.NDArray,  # (T,) datetime64[us]
 ) -> list[tuple[np.datetime64, int, bool]]:
     """Return time-ordered ``(t, point_idx, is_rising)`` for every state change."""
-    augmented = np.vstack([in_access[np.newaxis],
-                           vis_batch.astype(np.int8)]).astype(np.int8)
-    diffs = np.diff(augmented, axis=0)           # (T, M)  +1=AOS  -1=LOS
-    rising_t,  rising_m  = np.where(diffs > 0)
+    augmented = np.vstack([in_access[np.newaxis], vis_batch.astype(np.int8)]).astype(
+        np.int8
+    )
+    diffs = np.diff(augmented, axis=0)  # (T, M)  +1=AOS  -1=LOS
+    rising_t, rising_m = np.where(diffs > 0)
     falling_t, falling_m = np.where(diffs < 0)
-    all_t = np.concatenate([t_batch[rising_t],  t_batch[falling_t]])
-    all_m = np.concatenate([rising_m,            falling_m])
-    all_r = np.concatenate([np.ones(len(rising_t),  dtype=bool),
-                             np.zeros(len(falling_t), dtype=bool)])
-    order = np.argsort(all_t, kind='stable')
+    all_t = np.concatenate([t_batch[rising_t], t_batch[falling_t]])
+    all_m = np.concatenate([rising_m, falling_m])
+    all_r = np.concatenate(
+        [np.ones(len(rising_t), dtype=bool), np.zeros(len(falling_t), dtype=bool)]
+    )
+    order = np.argsort(all_t, kind="stable")
     return [(all_t[k], int(all_m[k]), bool(all_r[k])) for k in order]
 
 
 def collect_access_intervals_multi(
-        lat:          npt.NDArray,
-        lon:          npt.NDArray,
-        sensor_specs: list,
-        t_start:      np.datetime64,
-        t_end:        np.datetime64,
-        alt:          float,
-        el_min:       float,
-        sza_max,
-        sza_min,
-        max_step:     np.timedelta64,
-        batch_size:   int,
-        *,
-        close_at_end: bool,
+    lat: npt.NDArray,
+    lon: npt.NDArray,
+    sensor_specs: list,
+    t_start: np.datetime64,
+    t_end: np.datetime64,
+    alt: float,
+    el_min: float,
+    sza_max,
+    sza_min,
+    max_step: np.timedelta64,
+    batch_size: int,
+    *,
+    close_at_end: bool,
 ) -> list[list[tuple[np.datetime64, np.datetime64]]]:
     """Collect per-point ``(AOS, LOS)`` intervals for multiple sensors.
 
@@ -283,37 +397,44 @@ def collect_access_intervals_multi(
         If ``True``, any interval still open at ``t_end`` is closed with
         ``t_end``.  If ``False``, open-ended intervals are discarded.
     """
-    use_sza      = sza_max is not None or sza_min is not None
+    use_sza = sza_max is not None or sza_min is not None
     cos_sza_max_ = float(np.cos(sza_max)) if sza_max is not None else None
     cos_sza_min_ = float(np.cos(sza_min)) if sza_min is not None else None
 
     lat = np.asarray(lat, dtype=np.float64)
     lon = np.asarray(lon, dtype=np.float64)
-    M   = len(lat)
+    M = len(lat)
     if M == 0:
         raise ValueError("lat/lon arrays must not be empty")
 
     gs_ecef, up = _build_gs(lat, lon, alt)
-    sin_el_min  = float(np.sin(el_min))
+    sin_el_min = float(np.sin(el_min))
 
     offs, t_start_us = _make_offsets(t_start, t_end, max_step)
     N = len(offs)
 
-    intervals:   list[list[tuple[np.datetime64, np.datetime64]]] = [[] for _ in range(M)]
+    intervals: list[list[tuple[np.datetime64, np.datetime64]]] = [[] for _ in range(M)]
     current_aos: list[np.datetime64 | None] = [None] * M
     in_access = np.zeros(M, dtype=np.bool_)
 
     if N == 0:
         return intervals
 
-    t_out = t_start_us + offs.astype('timedelta64[us]')
+    t_out = t_start_us + offs.astype("timedelta64[us]")
 
     for b0 in range(0, N, batch_size):
-        b1      = min(b0 + batch_size, N)
+        b1 = min(b0 + batch_size, N)
         t_batch = t_out[b0:b1]
-        vis     = _compute_vis_batch_multi(t_batch, sensor_specs,
-                                           gs_ecef, up, sin_el_min,
-                                           use_sza, cos_sza_max_, cos_sza_min_)
+        vis = _compute_vis_batch_multi(
+            t_batch,
+            sensor_specs,
+            gs_ecef,
+            up,
+            sin_el_min,
+            use_sza,
+            cos_sza_max_,
+            cos_sza_min_,
+        )
 
         for t_evt, m, is_rising in _detect_transitions(vis, in_access, t_batch):
             if is_rising:
@@ -326,7 +447,7 @@ def collect_access_intervals_multi(
         in_access = vis[-1]
 
     if close_at_end:
-        t_end_dt = np.datetime64(t_end, 'us')
+        t_end_dt = np.datetime64(t_end, "us")
         for m in range(M):
             if in_access[m] and current_aos[m] is not None:
                 intervals[m].append((current_aos[m], t_end_dt))
@@ -335,84 +456,106 @@ def collect_access_intervals_multi(
 
 
 def _collect_access_intervals(
-        lat:               npt.NDArray,
-        lon:               npt.NDArray,
-        keplerian_params:  dict,
-        t_start:           np.datetime64,
-        t_end:             np.datetime64,
-        alt:               float,
-        el_min:            float,
-        propagator_type:   str,
-        max_step:          np.timedelta64,
-        batch_size:        int,
-        fov_pointing_lvlh, fov_half_angle,
-        sza_max,           sza_min,
-        *,
-        close_at_end:      bool,
+    lat: npt.NDArray,
+    lon: npt.NDArray,
+    keplerian_params: dict,
+    t_start: np.datetime64,
+    t_end: np.datetime64,
+    alt: float,
+    el_min: float,
+    propagator_type: str,
+    max_step: np.timedelta64,
+    batch_size: int,
+    fov_pointing_lvlh,
+    fov_half_angle,
+    sza_max,
+    sza_min,
+    *,
+    close_at_end: bool,
 ) -> list[list[tuple[np.datetime64, np.datetime64]]]:
     """Collect per-point ``(AOS, LOS)`` ``datetime64[us]`` interval pairs (single sensor).
 
     Delegates to :func:`collect_access_intervals_multi` with a one-element
     sensor spec list.
     """
-    spec = make_sensor_spec(keplerian_params, propagator_type,
-                             fov_pointing_lvlh, fov_half_angle)
+    spec = make_sensor_spec(
+        keplerian_params, propagator_type, fov_pointing_lvlh, fov_half_angle
+    )
     return collect_access_intervals_multi(
-        lat, lon, [spec], t_start, t_end, alt, el_min,
-        sza_max, sza_min, max_step, batch_size, close_at_end=close_at_end,
+        lat,
+        lon,
+        [spec],
+        t_start,
+        t_end,
+        alt,
+        el_min,
+        sza_max,
+        sza_min,
+        max_step,
+        batch_size,
+        close_at_end=close_at_end,
     )
 
 
 def coverage_fraction_multi(
-        lat:          npt.NDArray,
-        lon:          npt.NDArray,
-        sensor_specs: list,
-        t_start:      np.datetime64,
-        t_end:        np.datetime64,
-        alt:          float,
-        el_min:       float,
-        sza_max,
-        sza_min,
-        max_step:     np.timedelta64,
-        batch_size:   int,
+    lat: npt.NDArray,
+    lon: npt.NDArray,
+    sensor_specs: list,
+    t_start: np.datetime64,
+    t_end: np.datetime64,
+    alt: float,
+    el_min: float,
+    sza_max,
+    sza_min,
+    max_step: np.timedelta64,
+    batch_size: int,
 ) -> dict:
     """Multi-sensor implementation of :func:`coverage_fraction`."""
-    use_sza      = sza_max is not None or sza_min is not None
+    use_sza = sza_max is not None or sza_min is not None
     cos_sza_max_ = float(np.cos(sza_max)) if sza_max is not None else None
     cos_sza_min_ = float(np.cos(sza_min)) if sza_min is not None else None
 
     lat = np.asarray(lat, dtype=np.float64)
     lon = np.asarray(lon, dtype=np.float64)
-    M   = len(lat)
+    M = len(lat)
     if M == 0:
         raise ValueError("lat/lon arrays must not be empty")
 
     gs_ecef, up = _build_gs(lat, lon, alt)
-    sin_el_min  = float(np.sin(el_min))
+    sin_el_min = float(np.sin(el_min))
 
     offs, t_start_us = _make_offsets(t_start, t_end, max_step)
     N = len(offs)
     if N == 0:
         empty = np.array([], dtype=np.float32)
         return {
-            't': np.array([], dtype='datetime64[us]'),
-            'fraction': empty, 'cumulative': empty,
-            'mean_fraction': float('nan'), 'final_cumulative': float('nan'),
+            "t": np.array([], dtype="datetime64[us]"),
+            "fraction": empty,
+            "cumulative": empty,
+            "mean_fraction": float("nan"),
+            "final_cumulative": float("nan"),
         }
 
-    t_out    = t_start_us + offs.astype('timedelta64[us]')
+    t_out = t_start_us + offs.astype("timedelta64[us]")
     frac_out = np.empty(N, dtype=np.float32)
-    cum_out  = np.empty(N, dtype=np.float32)
+    cum_out = np.empty(N, dtype=np.float32)
 
     ever_covered = np.zeros(M, dtype=np.bool_)
-    n_covered    = 0
+    n_covered = 0
 
     for b0 in range(0, N, batch_size):
-        b1      = min(b0 + batch_size, N)
+        b1 = min(b0 + batch_size, N)
         t_batch = t_out[b0:b1]
-        vis     = _compute_vis_batch_multi(t_batch, sensor_specs,
-                                           gs_ecef, up, sin_el_min,
-                                           use_sza, cos_sza_max_, cos_sza_min_)
+        vis = _compute_vis_batch_multi(
+            t_batch,
+            sensor_specs,
+            gs_ecef,
+            up,
+            sin_el_min,
+            use_sza,
+            cos_sza_max_,
+            cos_sza_min_,
+        )
 
         frac_out[b0:b1] = vis.mean(axis=1)
 
@@ -420,74 +563,80 @@ def coverage_fraction_multi(
             new = vis[local_t] & ~ever_covered
             if new.any():
                 ever_covered |= new
-                n_covered    += int(new.sum())
+                n_covered += int(new.sum())
             cum_out[b0 + local_t] = n_covered / M
 
     return {
-        't':                t_out,
-        'fraction':         frac_out,
-        'cumulative':       cum_out,
-        'mean_fraction':    float(np.mean(frac_out)),
-        'final_cumulative': float(cum_out[-1]),
+        "t": t_out,
+        "fraction": frac_out,
+        "cumulative": cum_out,
+        "mean_fraction": float(np.mean(frac_out)),
+        "final_cumulative": float(cum_out[-1]),
     }
 
 
 def pointwise_coverage_multi(
-        lat:          npt.NDArray,
-        lon:          npt.NDArray,
-        sensor_specs: list,
-        t_start:      np.datetime64,
-        t_end:        np.datetime64,
-        alt:          float,
-        el_min:       float,
-        sza_max,
-        sza_min,
-        max_step:     np.timedelta64,
-        batch_size:   int,
+    lat: npt.NDArray,
+    lon: npt.NDArray,
+    sensor_specs: list,
+    t_start: np.datetime64,
+    t_end: np.datetime64,
+    alt: float,
+    el_min: float,
+    sza_max,
+    sza_min,
+    max_step: np.timedelta64,
+    batch_size: int,
 ) -> dict:
     """Multi-sensor implementation of :func:`pointwise_coverage`."""
-    use_sza      = sza_max is not None or sza_min is not None
+    use_sza = sza_max is not None or sza_min is not None
     cos_sza_max_ = float(np.cos(sza_max)) if sza_max is not None else None
     cos_sza_min_ = float(np.cos(sza_min)) if sza_min is not None else None
 
     lat = np.asarray(lat, dtype=np.float64)
     lon = np.asarray(lon, dtype=np.float64)
-    M   = len(lat)
+    M = len(lat)
     if M == 0:
         raise ValueError("lat/lon arrays must not be empty")
 
     gs_ecef, up = _build_gs(lat, lon, alt)
-    sin_el_min  = float(np.sin(el_min))
+    sin_el_min = float(np.sin(el_min))
 
     offs, t_start_us = _make_offsets(t_start, t_end, max_step)
     N = len(offs)
-    t_out = t_start_us + offs.astype('timedelta64[us]')
+    t_out = t_start_us + offs.astype("timedelta64[us]")
 
     if N == 0:
         return {
-            't':       np.array([], dtype='datetime64[us]'),
-            'lat':     lat,
-            'lon':     lon,
-            'alt':     float(alt),
-            'visible': np.empty((0, M), dtype=np.bool_),
+            "t": np.array([], dtype="datetime64[us]"),
+            "lat": lat,
+            "lon": lon,
+            "alt": float(alt),
+            "visible": np.empty((0, M), dtype=np.bool_),
         }
 
     visible = np.empty((N, M), dtype=np.bool_)
 
     for b0 in range(0, N, batch_size):
-        b1      = min(b0 + batch_size, N)
+        b1 = min(b0 + batch_size, N)
         t_batch = t_out[b0:b1]
         visible[b0:b1] = _compute_vis_batch_multi(
-            t_batch, sensor_specs, gs_ecef, up, sin_el_min,
-            use_sza, cos_sza_max_, cos_sza_min_,
+            t_batch,
+            sensor_specs,
+            gs_ecef,
+            up,
+            sin_el_min,
+            use_sza,
+            cos_sza_max_,
+            cos_sza_min_,
         )
 
     return {
-        't':       t_out,
-        'lat':     lat,
-        'lon':     lon,
-        'alt':     float(alt),
-        'visible': visible,
+        "t": t_out,
+        "lat": lat,
+        "lon": lon,
+        "alt": float(alt),
+        "visible": visible,
     }
 
 
@@ -495,9 +644,10 @@ def pointwise_coverage_multi(
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def sample_aoi(
-        polygon: npt.NDArray[np.floating],
-        n:       int,
+    polygon: npt.NDArray[np.floating],
+    n: int,
 ) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
     """Sample *n* approximately equal-area points inside an AoI polygon.
 
@@ -547,13 +697,13 @@ def sample_aoi(
     # Generate enough global points to get approximately n inside
     n_global = int(np.ceil(n / frac * 1.3))
     lat_all, lon_all = _fibonacci_sphere(n_global)
-    inside  = _pip(polygon, lat_all, lon_all)
-    lat_in  = lat_all[inside]
-    lon_in  = lon_all[inside]
+    inside = _pip(polygon, lat_all, lon_all)
+    lat_in = lat_all[inside]
+    lon_in = lon_all[inside]
 
     # Evenly subsample if we ended up with more than n points
     if len(lat_in) > n:
-        idx    = np.round(np.linspace(0, len(lat_in) - 1, n)).astype(int)
+        idx = np.round(np.linspace(0, len(lat_in) - 1, n)).astype(int)
         lat_in = lat_in[idx]
         lon_in = lon_in[idx]
 
@@ -561,11 +711,11 @@ def sample_aoi(
 
 
 def sample_region(
-        lat_min:       float | None = None,
-        lat_max:       float | None = None,
-        lon_min:       float | None = None,
-        lon_max:       float | None = None,
-        point_density: float = 1e11,
+    lat_min: float | None = None,
+    lat_max: float | None = None,
+    lon_min: float | None = None,
+    lon_max: float | None = None,
+    point_density: float = 1e11,
 ) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
     """Sample an approximately equal-area Fibonacci lattice over a lat/lon band.
 
@@ -637,19 +787,16 @@ def sample_region(
         )
 
     if point_density <= 0:
-        raise ValueError(
-            f"point_density must be positive, got {point_density}"
-        )
+        raise ValueError(f"point_density must be positive, got {point_density}")
 
     # --- resolve defaults ---
-    lat_lo   = float(lat_min) if lat_min is not None else -np.pi / 2.0
-    lat_hi   = float(lat_max) if lat_max is not None else  np.pi / 2.0
+    lat_lo = float(lat_min) if lat_min is not None else -np.pi / 2.0
+    lat_hi = float(lat_max) if lat_max is not None else np.pi / 2.0
     full_lon = lon_min is None
 
     if lat_lo >= lat_hi:
         raise ValueError(
-            f"lat_min ({lat_lo:.6f} rad) must be less than "
-            f"lat_max ({lat_hi:.6f} rad)"
+            f"lat_min ({lat_lo:.6f} rad) must be less than lat_max ({lat_hi:.6f} rad)"
         )
 
     lon_lo = float(lon_min) if lon_min is not None else 0.0
@@ -665,9 +812,14 @@ def sample_region(
     else:
         lon_frac = (lon_hi - lon_lo) / (2.0 * np.pi)
 
-    area = (4.0 * np.pi * EARTH_MEAN_RADIUS**2
-            * (np.sin(lat_hi) - np.sin(lat_lo)) / 2.0
-            * lon_frac)
+    area = (
+        4.0
+        * np.pi
+        * EARTH_MEAN_RADIUS**2
+        * (np.sin(lat_hi) - np.sin(lat_lo))
+        / 2.0
+        * lon_frac
+    )
 
     n = max(1, int(np.round(area / point_density)))
 
@@ -693,7 +845,7 @@ def sample_region(
 
     # Evenly subsample if we have more points than requested
     if len(lat_in) > n:
-        idx    = np.round(np.linspace(0, len(lat_in) - 1, n)).astype(int)
+        idx = np.round(np.linspace(0, len(lat_in) - 1, n)).astype(int)
         lat_in = lat_in[idx]
         lon_in = lon_in[idx]
 
@@ -701,20 +853,20 @@ def sample_region(
 
 
 def coverage_fraction(
-        lat:               npt.NDArray[np.floating],
-        lon:               npt.NDArray[np.floating],
-        keplerian_params:  dict,
-        t_start:           np.datetime64,
-        t_end:             np.datetime64,
-        alt:               float | np.floating = 0.0,
-        el_min:            float | np.floating = 0.0,
-        propagator_type:   str = 'twobody',
-        max_step:          np.timedelta64 = np.timedelta64(30, 's'),
-        batch_size:        int = 1_000,
-        fov_pointing_lvlh: npt.NDArray | None = None,
-        fov_half_angle:    float | None = None,
-        sza_max:           float | None = None,
-        sza_min:           float | None = None,
+    lat: npt.NDArray[np.floating],
+    lon: npt.NDArray[np.floating],
+    keplerian_params: dict,
+    t_start: np.datetime64,
+    t_end: np.datetime64,
+    alt: float | np.floating = 0.0,
+    el_min: float | np.floating = 0.0,
+    propagator_type: str = "twobody",
+    max_step: np.timedelta64 = np.timedelta64(30, "s"),
+    batch_size: int = 1_000,
+    fov_pointing_lvlh: npt.NDArray | None = None,
+    fov_half_angle: float | None = None,
+    sza_max: float | None = None,
+    sza_min: float | None = None,
 ) -> dict:
     """Compute instantaneous and cumulative coverage fraction over a time window.
 
@@ -756,29 +908,39 @@ def coverage_fraction(
 
         ``final_cumulative`` : float — fraction of points covered ≥ once.
     """
-    spec = make_sensor_spec(keplerian_params, propagator_type,
-                             fov_pointing_lvlh, fov_half_angle)
+    spec = make_sensor_spec(
+        keplerian_params, propagator_type, fov_pointing_lvlh, fov_half_angle
+    )
     return coverage_fraction_multi(
-        lat, lon, [spec], t_start, t_end,
-        alt, el_min, sza_max, sza_min, max_step, batch_size,
+        lat,
+        lon,
+        [spec],
+        t_start,
+        t_end,
+        alt,
+        el_min,
+        sza_max,
+        sza_min,
+        max_step,
+        batch_size,
     )
 
 
 def revisit_time(
-        lat:               npt.NDArray[np.floating],
-        lon:               npt.NDArray[np.floating],
-        keplerian_params:  dict,
-        t_start:           np.datetime64,
-        t_end:             np.datetime64,
-        alt:               float | np.floating = 0.0,
-        el_min:            float | np.floating = 0.0,
-        propagator_type:   str = 'twobody',
-        max_step:          np.timedelta64 = np.timedelta64(30, 's'),
-        batch_size:        int = 1_000,
-        fov_pointing_lvlh: npt.NDArray | None = None,
-        fov_half_angle:    float | None = None,
-        sza_max:           float | None = None,
-        sza_min:           float | None = None,
+    lat: npt.NDArray[np.floating],
+    lon: npt.NDArray[np.floating],
+    keplerian_params: dict,
+    t_start: np.datetime64,
+    t_end: np.datetime64,
+    alt: float | np.floating = 0.0,
+    el_min: float | np.floating = 0.0,
+    propagator_type: str = "twobody",
+    max_step: np.timedelta64 = np.timedelta64(30, "s"),
+    batch_size: int = 1_000,
+    fov_pointing_lvlh: npt.NDArray | None = None,
+    fov_half_angle: float | None = None,
+    sza_max: float | None = None,
+    sza_min: float | None = None,
 ) -> dict:
     """Compute per-point revisit time statistics over a time window.
 
@@ -826,51 +988,67 @@ def revisit_time(
     """
     lat = np.asarray(lat, dtype=np.float64)
     lon = np.asarray(lon, dtype=np.float64)
-    M   = len(lat)
+    M = len(lat)
     _nan = np.full(M, np.nan)
 
     intervals = _collect_access_intervals(
-        lat, lon, keplerian_params, t_start, t_end,
-        alt, el_min, propagator_type, max_step, batch_size,
-        fov_pointing_lvlh, fov_half_angle, sza_max, sza_min,
+        lat,
+        lon,
+        keplerian_params,
+        t_start,
+        t_end,
+        alt,
+        el_min,
+        propagator_type,
+        max_step,
+        batch_size,
+        fov_pointing_lvlh,
+        fov_half_angle,
+        sza_max,
+        sza_min,
         close_at_end=False,
     )
 
-    max_revisit  = np.full(M, np.nan)
+    max_revisit = np.full(M, np.nan)
     mean_revisit = np.full(M, np.nan)
     for m, ivals in enumerate(intervals):
         if len(ivals) >= 2:
-            gaps_us = np.array([
-                int((ivals[i + 1][0] - ivals[i][1]) / np.timedelta64(1, 'us'))
-                for i in range(len(ivals) - 1)
-            ], dtype=np.float64)
-            max_revisit[m]  = gaps_us.max()  / 1e6
+            gaps_us = np.array(
+                [
+                    int((ivals[i + 1][0] - ivals[i][1]) / np.timedelta64(1, "us"))
+                    for i in range(len(ivals) - 1)
+                ],
+                dtype=np.float64,
+            )
+            max_revisit[m] = gaps_us.max() / 1e6
             mean_revisit[m] = gaps_us.mean() / 1e6
 
     has_gaps = ~np.isnan(max_revisit)
     return {
-        'max_revisit':  max_revisit,
-        'mean_revisit': mean_revisit,
-        'global_max':   float(np.nanmax(max_revisit))  if has_gaps.any() else float('nan'),
-        'global_mean':  float(np.nanmean(mean_revisit)) if has_gaps.any() else float('nan'),
+        "max_revisit": max_revisit,
+        "mean_revisit": mean_revisit,
+        "global_max": float(np.nanmax(max_revisit)) if has_gaps.any() else float("nan"),
+        "global_mean": float(np.nanmean(mean_revisit))
+        if has_gaps.any()
+        else float("nan"),
     }
 
 
 def pointwise_coverage(
-        lat:               npt.NDArray[np.floating],
-        lon:               npt.NDArray[np.floating],
-        keplerian_params:  dict,
-        t_start:           np.datetime64,
-        t_end:             np.datetime64,
-        alt:               float | np.floating = 0.0,
-        el_min:            float | np.floating = 0.0,
-        propagator_type:   str = 'twobody',
-        max_step:          np.timedelta64 = np.timedelta64(30, 's'),
-        batch_size:        int = 1_000,
-        fov_pointing_lvlh: npt.NDArray | None = None,
-        fov_half_angle:    float | None = None,
-        sza_max:           float | None = None,
-        sza_min:           float | None = None,
+    lat: npt.NDArray[np.floating],
+    lon: npt.NDArray[np.floating],
+    keplerian_params: dict,
+    t_start: np.datetime64,
+    t_end: np.datetime64,
+    alt: float | np.floating = 0.0,
+    el_min: float | np.floating = 0.0,
+    propagator_type: str = "twobody",
+    max_step: np.timedelta64 = np.timedelta64(30, "s"),
+    batch_size: int = 1_000,
+    fov_pointing_lvlh: npt.NDArray | None = None,
+    fov_half_angle: float | None = None,
+    sza_max: float | None = None,
+    sza_min: float | None = None,
 ) -> dict:
     """Return the raw (N × M) visibility matrix for every timestep and ground point.
 
@@ -929,29 +1107,39 @@ def pointwise_coverage(
     Prefer :func:`coverage_fraction` or :func:`revisit_time` for summary
     statistics over large grids.
     """
-    spec = make_sensor_spec(keplerian_params, propagator_type,
-                             fov_pointing_lvlh, fov_half_angle)
+    spec = make_sensor_spec(
+        keplerian_params, propagator_type, fov_pointing_lvlh, fov_half_angle
+    )
     return pointwise_coverage_multi(
-        lat, lon, [spec], t_start, t_end,
-        alt, el_min, sza_max, sza_min, max_step, batch_size,
+        lat,
+        lon,
+        [spec],
+        t_start,
+        t_end,
+        alt,
+        el_min,
+        sza_max,
+        sza_min,
+        max_step,
+        batch_size,
     )
 
 
 def access_pointwise(
-        lat:               npt.NDArray[np.floating],
-        lon:               npt.NDArray[np.floating],
-        keplerian_params:  dict,
-        t_start:           np.datetime64,
-        t_end:             np.datetime64,
-        alt:               float | np.floating = 0.0,
-        el_min:            float | np.floating = 0.0,
-        propagator_type:   str = 'twobody',
-        max_step:          np.timedelta64 = np.timedelta64(30, 's'),
-        batch_size:        int = 1_000,
-        fov_pointing_lvlh: npt.NDArray | None = None,
-        fov_half_angle:    float | None = None,
-        sza_max:           float | None = None,
-        sza_min:           float | None = None,
+    lat: npt.NDArray[np.floating],
+    lon: npt.NDArray[np.floating],
+    keplerian_params: dict,
+    t_start: np.datetime64,
+    t_end: np.datetime64,
+    alt: float | np.floating = 0.0,
+    el_min: float | np.floating = 0.0,
+    propagator_type: str = "twobody",
+    max_step: np.timedelta64 = np.timedelta64(30, "s"),
+    batch_size: int = 1_000,
+    fov_pointing_lvlh: npt.NDArray | None = None,
+    fov_half_angle: float | None = None,
+    sza_max: float | None = None,
+    sza_min: float | None = None,
 ) -> list[list[tuple[np.datetime64, np.datetime64]]]:
     """Return per-point access intervals over a time window.
 
@@ -999,28 +1187,39 @@ def access_pointwise(
         ``t_end``.  Points with no access return an empty list.
     """
     return _collect_access_intervals(
-        lat, lon, keplerian_params, t_start, t_end,
-        alt, el_min, propagator_type, max_step, batch_size,
-        fov_pointing_lvlh, fov_half_angle, sza_max, sza_min,
+        lat,
+        lon,
+        keplerian_params,
+        t_start,
+        t_end,
+        alt,
+        el_min,
+        propagator_type,
+        max_step,
+        batch_size,
+        fov_pointing_lvlh,
+        fov_half_angle,
+        sza_max,
+        sza_min,
         close_at_end=True,
     )
 
 
 def revisit_pointwise(
-        lat:               npt.NDArray[np.floating],
-        lon:               npt.NDArray[np.floating],
-        keplerian_params:  dict,
-        t_start:           np.datetime64,
-        t_end:             np.datetime64,
-        alt:               float | np.floating = 0.0,
-        el_min:            float | np.floating = 0.0,
-        propagator_type:   str = 'twobody',
-        max_step:          np.timedelta64 = np.timedelta64(30, 's'),
-        batch_size:        int = 1_000,
-        fov_pointing_lvlh: npt.NDArray | None = None,
-        fov_half_angle:    float | None = None,
-        sza_max:           float | None = None,
-        sza_min:           float | None = None,
+    lat: npt.NDArray[np.floating],
+    lon: npt.NDArray[np.floating],
+    keplerian_params: dict,
+    t_start: np.datetime64,
+    t_end: np.datetime64,
+    alt: float | np.floating = 0.0,
+    el_min: float | np.floating = 0.0,
+    propagator_type: str = "twobody",
+    max_step: np.timedelta64 = np.timedelta64(30, "s"),
+    batch_size: int = 1_000,
+    fov_pointing_lvlh: npt.NDArray | None = None,
+    fov_half_angle: float | None = None,
+    sza_max: float | None = None,
+    sza_min: float | None = None,
 ) -> list[npt.NDArray[np.timedelta64]]:
     """Return per-point revisit gap arrays over a time window.
 
@@ -1065,19 +1264,30 @@ def revisit_pointwise(
         Points with fewer than two access windows return an empty array.
     """
     intervals = _collect_access_intervals(
-        lat, lon, keplerian_params, t_start, t_end,
-        alt, el_min, propagator_type, max_step, batch_size,
-        fov_pointing_lvlh, fov_half_angle, sza_max, sza_min,
+        lat,
+        lon,
+        keplerian_params,
+        t_start,
+        t_end,
+        alt,
+        el_min,
+        propagator_type,
+        max_step,
+        batch_size,
+        fov_pointing_lvlh,
+        fov_half_angle,
+        sza_max,
+        sza_min,
         close_at_end=False,
     )
     result = []
     for ivals in intervals:
         if len(ivals) < 2:
-            result.append(np.array([], dtype='timedelta64[us]'))
+            result.append(np.array([], dtype="timedelta64[us]"))
         else:
             gaps = np.array(
                 [ivals[i + 1][0] - ivals[i][1] for i in range(len(ivals) - 1)],
-                dtype='timedelta64[us]',
+                dtype="timedelta64[us]",
             )
             result.append(gaps)
     return result
@@ -1098,9 +1308,9 @@ def _unwrap_ring(coords: list) -> tuple[list, bool]:
     (i.e. the ring crosses the antimeridian).
     """
     lons_raw = [c[0] for c in coords]
-    lats     = [c[1] for c in coords]
-    lons_u   = [lons_raw[0]]
-    crosses  = False
+    lats = [c[1] for c in coords]
+    lons_u = [lons_raw[0]]
+    crosses = False
     for j in range(1, len(lons_raw)):
         dl = lons_raw[j] - lons_u[-1]
         if dl > 180.0:
@@ -1179,9 +1389,9 @@ def load_shapefile_geometry(path, feature_index):
 
 
 def sample_from_geometry(
-        geom,
-        crosses_am: bool,
-        point_density: float,
+    geom,
+    crosses_am: bool,
+    point_density: float,
 ) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
     """Fibonacci-sphere sampling inside a shapely geometry.
 
@@ -1237,10 +1447,10 @@ def sample_from_geometry(
 
 
 def sample_shapefile(
-        path: str,
-        *,
-        feature_index: int | None = None,
-        point_density: float = 1e11,
+    path: str,
+    *,
+    feature_index: int | None = None,
+    point_density: float = 1e11,
 ) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating]]:
     """Sample approximately equal-area points from an ESRI Shapefile polygon.
 
@@ -1290,9 +1500,10 @@ def sample_shapefile(
 # Natural Earth geography helpers
 # ---------------------------------------------------------------------------
 
+
 def _load_ne_features(
-        path: str,
-        indices: list[int],
+    path: str,
+    indices: list[int],
 ) -> tuple:
     """Load and union a specific subset of features from a Natural Earth shapefile.
 
@@ -1352,15 +1563,20 @@ def _find_ne_indices(geography: str) -> tuple[str, list[int]]:
     g = geography.strip()
 
     # ── 1. Slash: "Country/Subdivision" ─────────────────────────────────────
-    if '/' in g:
-        country, subdivision = (s.strip() for s in g.split('/', 1))
+    if "/" in g:
+        country, subdivision = (s.strip() for s in g.split("/", 1))
         cl = country.lower()
         sl = subdivision.lower()
         sf1 = _pyshp.Reader(str(_NE_ADM1))
-        idx = [i for i, r in enumerate(sf1.records())
-               if r.as_dict()['admin'].lower() == cl
-               and (r.as_dict()['name'].lower()    == sl
-                    or r.as_dict()['name_en'].lower() == sl)]
+        idx = [
+            i
+            for i, r in enumerate(sf1.records())
+            if r.as_dict()["admin"].lower() == cl
+            and (
+                r.as_dict()["name"].lower() == sl
+                or r.as_dict()["name_en"].lower() == sl
+            )
+        ]
         if not idx:
             raise ValueError(
                 f"Subdivision {subdivision!r} not found in {country!r}. "
@@ -1371,26 +1587,23 @@ def _find_ne_indices(geography: str) -> tuple[str, list[int]]:
         return str(_NE_ADM1), idx
 
     # ── 2. ISO 3166-2: "CA-QC" ──────────────────────────────────────────────
-    if _re.match(r'^[A-Z]{2}-[A-Z0-9]{1,3}$', g):
+    if _re.match(r"^[A-Z]{2}-[A-Z0-9]{1,3}$", g):
         sf1 = _pyshp.Reader(str(_NE_ADM1))
-        idx = [i for i, r in enumerate(sf1.records())
-               if r.as_dict()['iso_3166_2'] == g]
+        idx = [i for i, r in enumerate(sf1.records()) if r.as_dict()["iso_3166_2"] == g]
         if idx:
             return str(_NE_ADM1), idx
 
     # ── 3. ISO A2: "CA" ─────────────────────────────────────────────────────
     if len(g) == 2 and g.isupper():
         sf0 = _pyshp.Reader(str(_NE_ADM0))
-        idx = [i for i, r in enumerate(sf0.records())
-               if r.as_dict()['ISO_A2'] == g]
+        idx = [i for i, r in enumerate(sf0.records()) if r.as_dict()["ISO_A2"] == g]
         if idx:
             return str(_NE_ADM0), idx
 
     # ── 4. ISO A3: "CAN" ────────────────────────────────────────────────────
     if len(g) == 3 and g.isupper():
         sf0 = _pyshp.Reader(str(_NE_ADM0))
-        idx = [i for i, r in enumerate(sf0.records())
-               if r.as_dict()['ISO_A3'] == g]
+        idx = [i for i, r in enumerate(sf0.records()) if r.as_dict()["ISO_A3"] == g]
         if idx:
             return str(_NE_ADM0), idx
 
@@ -1398,15 +1611,16 @@ def _find_ne_indices(geography: str) -> tuple[str, list[int]]:
     gl = g.lower()
 
     sf0 = _pyshp.Reader(str(_NE_ADM0))
-    idx = [i for i, r in enumerate(sf0.records())
-           if r.as_dict()['NAME'].lower() == gl]
+    idx = [i for i, r in enumerate(sf0.records()) if r.as_dict()["NAME"].lower() == gl]
     if idx:
         return str(_NE_ADM0), idx
 
     sf1 = _pyshp.Reader(str(_NE_ADM1))
-    idx = [i for i, r in enumerate(sf1.records())
-           if r.as_dict()['name'].lower()    == gl
-           or r.as_dict()['name_en'].lower() == gl]
+    idx = [
+        i
+        for i, r in enumerate(sf1.records())
+        if r.as_dict()["name"].lower() == gl or r.as_dict()["name_en"].lower() == gl
+    ]
     if idx:
         return str(_NE_ADM1), idx
 
@@ -1419,9 +1633,9 @@ def _find_ne_indices(geography: str) -> tuple[str, list[int]]:
 
 
 def sample_geography(
-        geography: str,
-        *,
-        point_density: float = 1e11,
+    geography: str,
+    *,
+    point_density: float = 1e11,
 ) -> tuple[npt.NDArray[np.floating], npt.NDArray[np.floating], object]:
     """Sample approximately equal-area points from a Natural Earth geography.
 
