@@ -7,11 +7,13 @@ API Reference
    spacecraft
    sensor
    attitude
+   condition
    ground_station
    aoi
    coverage
    orbit
    comm
+   interference
    power
    thermal
    plotting

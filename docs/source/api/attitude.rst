@@ -25,3 +25,8 @@ Attitude
    :members:
    :undoc-members:
    :show-inheritance:
+
+.. autoclass:: missiontools.ConditionAttitudeLaw
+   :members:
+   :undoc-members:
+   :show-inheritance:

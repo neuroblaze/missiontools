@@ -47,6 +47,7 @@ testpaths = ["tests"]
 
 [dependency-groups]
 dev = [
+    "cartopy>=0.25.0",
     "pytest>=9.0.2",
 ]
 docs = [

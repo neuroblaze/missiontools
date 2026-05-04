@@ -2,8 +2,6 @@
 
 `missiontools` is an MIT-licensed framework for space mission analysis tasks in Python. It is currently focused on Earth-orbiting missions, earth observation (EO) in particular.
 
-**If you are arriving here from a web search:** this package is under very active development and is probably not useful to you yet. APIs are subject to change without notice.
-
 **Check out the [examples folder](examples/) to see what you can do with `missiontools`**
 
 ## Features
@@ -15,13 +13,17 @@
  - Creation of areas of interest (AoIs) for coverage analysis: global, latitude/longitude bounding box, ESRI shapefile.
  - Convenience functions for creation of AoIs by country or state/province (eg: `AoI.from_geography('Canada/British Columbia')`). Uses the [Natural Earth](https://www.naturalearthdata.com) 1:50m dataset.
  - Computation of space-to-ground coverage including constraints on spacecraft elevation, solar zenith angle (SZA), and field-of-view.
- - Selectable spacecraft attitude laws: fixed (choice of frame: LVLH, ECI, ECEF), targeted
+ - Flexible condition system using boolean time-domain predicates (currently: sunlight, region, visibility), composable via boolean operations.
+ - Conic and rectangular (pyramidal) sensor models with optional condition-based gating of coverage activity.
+ - Selectable spacecraft attitude laws: fixed (LVLH, ECI, ECEF), targeted (spacecraft or ground station), limb (grazing-tangent), custom (user callback).
+ - Condition-based attitude switching: route between attitude laws using conditions
+ - Interference analysis between victim and interfering constellations with cumulative interference percentage and ITU threshold overlay.
  - Solar panel definition from panel normals and areas
  - Solar generation and orbit average power
  - Yaw steering for maximum solar generation
  - Thermal analysis: faces/normals connected to lumped element thermal model
- - Antenna modeling (isotropic, radially symmetric), including antenna pointing modes
- - Dynamic link budget computation including ITU-R P.618 weather effects (using [ITU-RPy](https://itu-rpy.readthedocs.io/en/latest/)).
+ - Antenna modeling (isotropic, radially symmetric), including antenna pointing modes and ITU-R S.465 reference pattern.
+ - Dynamic link budget computation including optional ITU-R P.618 weather effects (P.618 requires [ITU-RPy](https://itu-rpy.readthedocs.io/en/latest/)).
  
  Possible future features (open an issue if you'd like to see one of these implemented):
  - CAD import for solar & thermal
