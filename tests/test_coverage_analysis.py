@@ -1,24 +1,32 @@
 import numpy as np
 import pytest
 
-from missiontools import Spacecraft, AttitudeLaw, Sensor, AoI, Coverage
+from missiontools import (
+    Spacecraft,
+    FixedAttitudeLaw,
+    AbstractCondition,
+    ConicSensor,
+    RectangularSensor,
+    AoI,
+    Coverage,
+)
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
 
-_EPOCH = np.datetime64('2025-01-01T00:00:00', 'us')
-_T_END = _EPOCH + np.timedelta64(3600, 's')   # 1 hour
-_STEP  = np.timedelta64(300, 's')             # 5-min step (fast tests)
+_EPOCH = np.datetime64("2025-01-01T00:00:00", "us")
+_T_END = _EPOCH + np.timedelta64(3600, "s")  # 1 hour
+_STEP = np.timedelta64(300, "s")  # 5-min step (fast tests)
 
 _KW = dict(
-    a      = 6_771_000.0,
-    e      = 0.0,
-    i      = np.radians(51.6),
-    raan   = 0.0,
-    arg_p  = 0.0,
-    ma     = 0.0,
-    epoch  = _EPOCH,
+    a=6_771_000.0,
+    e=0.0,
+    i=np.radians(51.6),
+    raan=0.0,
+    arg_p=0.0,
+    ma=0.0,
+    epoch=_EPOCH,
 )
 
 
@@ -28,7 +36,7 @@ def _sc():
 
 def _sensor():
     """Body-mounted nadir sensor (body-z boresight, 30° FOV)."""
-    return Sensor(30.0, body_vector=[0, 0, 1])
+    return ConicSensor(30.0, body_vector=[0, 0, 1])
 
 
 def _aoi():
@@ -39,7 +47,7 @@ def _aoi():
 def _attached_sensor():
     """Ready-to-use sensor already attached to a fresh spacecraft."""
     sc = _sc()
-    s  = _sensor()
+    s = _sensor()
     sc.add_sensor(s)
     return s
 
@@ -48,21 +56,21 @@ def _attached_sensor():
 # Construction and validation
 # ===========================================================================
 
-class TestCoverageConstruct:
 
+class TestCoverageConstruct:
     def test_valid_construction(self):
         s = _attached_sensor()
-        Coverage(_aoi(), [s])   # must not raise
+        Coverage(_aoi(), [s])  # must not raise
 
     def test_aoi_wrong_type_raises(self):
         s = _attached_sensor()
-        with pytest.raises(TypeError, match='AoI'):
-            Coverage('not_an_aoi', [s])
+        with pytest.raises(TypeError, match="AoI"):
+            Coverage("not_an_aoi", [s])
 
     def test_sensors_not_iterable_raises(self):
         s = _attached_sensor()
         with pytest.raises(TypeError):
-            Coverage(_aoi(), s)   # bare Sensor, not iterable
+            Coverage(_aoi(), s)  # bare ConicSensor, not iterable
 
     def test_sensors_tuple_accepted(self):
         s = _attached_sensor()
@@ -70,29 +78,29 @@ class TestCoverageConstruct:
         assert len(cov.sensors) == 1
 
     def test_sensors_empty_list_raises(self):
-        with pytest.raises(ValueError, match='non-empty'):
+        with pytest.raises(ValueError, match="non-empty"):
             Coverage(_aoi(), [])
 
     def test_sensor_wrong_element_type_raises(self):
-        with pytest.raises(TypeError, match='Sensor'):
-            Coverage(_aoi(), ['not_a_sensor'])
+        with pytest.raises(TypeError, match="AbstractSensor"):
+            Coverage(_aoi(), ["not_a_sensor"])
 
     def test_multiple_sensors_same_spacecraft_accepted(self):
         sc = _sc()
-        s1 = Sensor(10.0, body_vector=[0, 0, 1])
-        s2 = Sensor(10.0, body_vector=[0, 1, 0])
+        s1 = ConicSensor(10.0, body_vector=[0, 0, 1])
+        s2 = ConicSensor(10.0, body_vector=[0, 1, 0])
         sc.add_sensor(s1)
         sc.add_sensor(s2)
-        Coverage(_aoi(), [s1, s2])   # must not raise
+        Coverage(_aoi(), [s1, s2])  # must not raise
 
     def test_unattached_sensor_raises(self):
-        s = _sensor()   # not attached to any spacecraft
-        with pytest.raises(RuntimeError, match='add_sensor'):
+        s = _sensor()  # not attached to any spacecraft
+        with pytest.raises(RuntimeError, match="add_sensor"):
             Coverage(_aoi(), [s])
 
     def test_negative_el_min_raises(self):
         s = _attached_sensor()
-        with pytest.raises(ValueError, match='el_min_deg'):
+        with pytest.raises(ValueError, match="el_min_deg"):
             Coverage(_aoi(), [s], el_min_deg=-1.0)
 
     def test_zero_el_min_accepted(self):
@@ -109,32 +117,32 @@ class TestCoverageConstruct:
 
     def test_independent_sensor_attached_works(self):
         sc = _sc()
-        s  = Sensor(30.0, attitude_law=AttitudeLaw.nadir())
+        s = ConicSensor(30.0, attitude_law=FixedAttitudeLaw.nadir())
         sc.add_sensor(s)
-        Coverage(_aoi(), [s])   # must not raise
+        Coverage(_aoi(), [s])  # must not raise
 
 
 # ===========================================================================
 # Properties
 # ===========================================================================
 
-class TestCoverageProperties:
 
+class TestCoverageProperties:
     def test_aoi_property(self):
         aoi = _aoi()
-        s   = _attached_sensor()
+        s = _attached_sensor()
         cov = Coverage(aoi, [s])
         assert cov.aoi is aoi
 
     def test_sensors_property_returns_copy(self):
-        s   = _attached_sensor()
+        s = _attached_sensor()
         cov = Coverage(_aoi(), [s])
         lst = cov.sensors
         lst.clear()
-        assert len(cov.sensors) == 1   # internal list unaffected
+        assert len(cov.sensors) == 1  # internal list unaffected
 
     def test_sensors_property_contains_sensor(self):
-        s   = _attached_sensor()
+        s = _attached_sensor()
         cov = Coverage(_aoi(), [s])
         assert cov.sensors[0] is s
 
@@ -143,51 +151,61 @@ class TestCoverageProperties:
 # Coverage methods — type and shape checks
 # ===========================================================================
 
+
 class TestCoverageMethods:
     """Verify return types and structure; numeric accuracy is tested in the
     existing functional coverage tests."""
 
     def setup_method(self):
-        self.s   = _attached_sensor()
+        self.s = _attached_sensor()
         self.aoi = _aoi()
         self.cov = Coverage(self.aoi, [self.s])
 
     def test_coverage_fraction_keys(self):
         result = self.cov.coverage_fraction(
-            _EPOCH, _T_END, max_step=_STEP,
+            _EPOCH,
+            _T_END,
+            max_step=_STEP,
         )
-        for key in ('t', 'fraction', 'cumulative', 'mean_fraction',
-                    'final_cumulative'):
+        for key in ("t", "fraction", "cumulative", "mean_fraction", "final_cumulative"):
             assert key in result
 
     def test_coverage_fraction_scalar_outputs(self):
         result = self.cov.coverage_fraction(
-            _EPOCH, _T_END, max_step=_STEP,
+            _EPOCH,
+            _T_END,
+            max_step=_STEP,
         )
-        assert np.isscalar(result['mean_fraction'])
-        assert np.isscalar(result['final_cumulative'])
-        assert 0.0 <= result['final_cumulative'] <= 1.0
+        assert np.isscalar(result["mean_fraction"])
+        assert np.isscalar(result["final_cumulative"])
+        assert 0.0 <= result["final_cumulative"] <= 1.0
 
     def test_revisit_time_keys(self):
         result = self.cov.revisit_time(
-            _EPOCH, _T_END, max_step=_STEP,
+            _EPOCH,
+            _T_END,
+            max_step=_STEP,
         )
-        for key in ('max_revisit', 'mean_revisit', 'global_max', 'global_mean'):
+        for key in ("max_revisit", "mean_revisit", "global_max", "global_mean"):
             assert key in result
 
     def test_pointwise_coverage_visible_shape(self):
         result = self.cov.pointwise_coverage(
-            _EPOCH, _T_END, max_step=_STEP,
+            _EPOCH,
+            _T_END,
+            max_step=_STEP,
         )
-        assert 'visible' in result
-        N = len(result['t'])
+        assert "visible" in result
+        N = len(result["t"])
         M = len(self.aoi)
-        assert result['visible'].shape == (N, M)
-        assert result['visible'].dtype == bool
+        assert result["visible"].shape == (N, M)
+        assert result["visible"].dtype == bool
 
     def test_access_pointwise_returns_list_of_lists(self):
         result = self.cov.access_pointwise(
-            _EPOCH, _T_END, max_step=_STEP,
+            _EPOCH,
+            _T_END,
+            max_step=_STEP,
         )
         assert isinstance(result, list)
         assert len(result) == len(self.aoi)
@@ -196,7 +214,9 @@ class TestCoverageMethods:
 
     def test_revisit_pointwise_returns_list_of_arrays(self):
         result = self.cov.revisit_pointwise(
-            _EPOCH, _T_END, max_step=_STEP,
+            _EPOCH,
+            _T_END,
+            max_step=_STEP,
         )
         assert isinstance(result, list)
         assert len(result) == len(self.aoi)
@@ -208,44 +228,46 @@ class TestCoverageMethods:
 # Constraints forwarded correctly
 # ===========================================================================
 
-class TestCoverageConstraints:
 
+class TestCoverageConstraints:
     def test_el_min_forwarded(self):
-        s   = _attached_sensor()
+        s = _attached_sensor()
         cov = Coverage(_aoi(), [s], el_min_deg=30.0)
         # High el_min → fewer accesses than el_min=0
         cov_no_el = Coverage(_aoi(), [s], el_min_deg=0.0)
-        r_strict  = cov.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
-        r_loose   = cov_no_el.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
-        assert r_strict['final_cumulative'] <= r_loose['final_cumulative']
+        r_strict = cov.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        r_loose = cov_no_el.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        assert r_strict["final_cumulative"] <= r_loose["final_cumulative"]
 
     def test_sza_max_reduces_coverage(self):
-        s    = _attached_sensor()
-        cov_day  = Coverage(_aoi(), [s], sza_max_deg=70.0)
+        s = _attached_sensor()
+        cov_day = Coverage(_aoi(), [s], sza_max_deg=70.0)
         cov_full = Coverage(_aoi(), [s])
-        r_day  = cov_day.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        r_day = cov_day.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
         r_full = cov_full.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
-        assert r_day['final_cumulative'] <= r_full['final_cumulative']
+        assert r_day["final_cumulative"] <= r_full["final_cumulative"]
 
     def test_independent_sensor_same_result_as_body_sensor(self):
         """An independent nadir AttitudeLaw sensor and a body-z sensor on a nadir
         spacecraft should produce identical coverage."""
         sc_body = _sc()
-        s_body  = Sensor(30.0, body_vector=[0, 0, 1])
+        s_body = ConicSensor(30.0, body_vector=[0, 0, 1])
         sc_body.add_sensor(s_body)
 
         sc_ind = _sc()
-        s_ind  = Sensor(30.0, attitude_law=AttitudeLaw.nadir())
+        s_ind = ConicSensor(30.0, attitude_law=FixedAttitudeLaw.nadir())
         sc_ind.add_sensor(s_ind)
 
         aoi = _aoi()
         cov_body = Coverage(aoi, [s_body])
-        cov_ind  = Coverage(aoi, [s_ind])
+        cov_ind = Coverage(aoi, [s_ind])
 
         r_body = cov_body.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
-        r_ind  = cov_ind.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        r_ind = cov_ind.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
         np.testing.assert_allclose(
-            r_body['final_cumulative'], r_ind['final_cumulative'], atol=1e-6,
+            r_body["final_cumulative"],
+            r_ind["final_cumulative"],
+            atol=1e-6,
         )
 
 
@@ -253,24 +275,30 @@ class TestCoverageConstraints:
 # Multi-sensor and constellation support
 # ===========================================================================
 
+
 class TestCoverageMultiSensor:
     """Verify that Coverage accepts multiple sensors and returns combined results."""
 
     def _make_sc(self, raan_deg: float = 0.0):
         return Spacecraft(
-            a=6_771_000., e=0., i=np.radians(51.6),
-            raan=np.radians(raan_deg), arg_p=0., ma=0., epoch=_EPOCH,
+            a=6_771_000.0,
+            e=0.0,
+            i=np.radians(51.6),
+            raan=np.radians(raan_deg),
+            arg_p=0.0,
+            ma=0.0,
+            epoch=_EPOCH,
         )
 
     def _make_attached(self, raan_deg: float = 0.0):
         sc = self._make_sc(raan_deg)
-        s  = Sensor(30.0, body_vector=[0, 0, 1])
+        s = ConicSensor(30.0, body_vector=[0, 0, 1])
         sc.add_sensor(s)
         return s
 
     def test_sensors_property_multi(self):
-        s1 = self._make_attached(0.)
-        s2 = self._make_attached(90.)
+        s1 = self._make_attached(0.0)
+        s2 = self._make_attached(90.0)
         cov = Coverage(_aoi(), [s1, s2])
         assert len(cov.sensors) == 2
         assert cov.sensors[0] is s1
@@ -280,33 +308,33 @@ class TestCoverageMultiSensor:
         """Two sensors on the same satellite (different FOV axes) should not
         crash and return a valid cumulative coverage fraction."""
         sc = self._make_sc()
-        s1 = Sensor(30.0, body_vector=[0, 0, 1])
-        s2 = Sensor(30.0, body_vector=[0, 1, 0])
+        s1 = ConicSensor(30.0, body_vector=[0, 0, 1])
+        s2 = ConicSensor(30.0, body_vector=[0, 1, 0])
         sc.add_sensor(s1)
         sc.add_sensor(s2)
         cov = Coverage(_aoi(), [s1, s2])
         result = cov.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
-        assert 0.0 <= result['final_cumulative'] <= 1.0
+        assert 0.0 <= result["final_cumulative"] <= 1.0
 
     def test_constellation_coverage_ge_single(self):
         """A two-satellite constellation should cover at least as much as a
         single satellite over the same period."""
-        s1 = self._make_attached(0.)
-        s2 = self._make_attached(90.)
+        s1 = self._make_attached(0.0)
+        s2 = self._make_attached(90.0)
         aoi = _aoi()
 
         cov_single = Coverage(aoi, [s1])
-        cov_const  = Coverage(aoi, [s1, s2])
+        cov_const = Coverage(aoi, [s1, s2])
 
         r_single = cov_single.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
-        r_const  = cov_const.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        r_const = cov_const.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
 
-        assert r_const['final_cumulative'] >= r_single['final_cumulative'] - 1e-9
+        assert r_const["final_cumulative"] >= r_single["final_cumulative"] - 1e-9
 
     def test_constellation_access_pointwise_list_length(self):
         """access_pointwise returns one list per AoI ground point."""
-        s1  = self._make_attached(0.)
-        s2  = self._make_attached(90.)
+        s1 = self._make_attached(0.0)
+        s2 = self._make_attached(90.0)
         aoi = _aoi()
         cov = Coverage(aoi, [s1, s2])
         result = cov.access_pointwise(_EPOCH, _T_END, max_step=_STEP)
@@ -315,8 +343,8 @@ class TestCoverageMultiSensor:
 
     def test_constellation_revisit_pointwise_list_length(self):
         """revisit_pointwise returns one array per AoI ground point."""
-        s1  = self._make_attached(0.)
-        s2  = self._make_attached(90.)
+        s1 = self._make_attached(0.0)
+        s2 = self._make_attached(90.0)
         aoi = _aoi()
         cov = Coverage(aoi, [s1, s2])
         result = cov.revisit_pointwise(_EPOCH, _T_END, max_step=_STEP)
@@ -327,12 +355,233 @@ class TestCoverageMultiSensor:
 
     def test_constellation_pointwise_coverage_shape(self):
         """pointwise_coverage returns (N, M) visible matrix for constellation."""
-        s1  = self._make_attached(0.)
-        s2  = self._make_attached(90.)
+        s1 = self._make_attached(0.0)
+        s2 = self._make_attached(90.0)
         aoi = _aoi()
         cov = Coverage(aoi, [s1, s2])
         result = cov.pointwise_coverage(_EPOCH, _T_END, max_step=_STEP)
-        N = len(result['t'])
+        N = len(result["t"])
         M = len(aoi)
-        assert result['visible'].shape == (N, M)
-        assert result['visible'].dtype == bool
+        assert result["visible"].shape == (N, M)
+        assert result["visible"].dtype == bool
+
+
+# ===========================================================================
+# Rectangular sensor coverage
+# ===========================================================================
+
+
+class TestCoverageRectangularSensor:
+    def _make_attached(self):
+        sc = _sc()
+        s = RectangularSensor(30.0, 30.0, body_vector=[0, 0, 1])
+        sc.add_sensor(s)
+        return s
+
+    def test_coverage_accepts_rectangular_sensor(self):
+        s = self._make_attached()
+        Coverage(_aoi(), [s])
+
+    def test_coverage_fraction_runs(self):
+        s = self._make_attached()
+        cov = Coverage(_aoi(), [s])
+        result = cov.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        assert 0.0 <= result["final_cumulative"] <= 1.0
+
+    def test_square_rectangular_narrower_than_conic(self):
+        sc = _sc()
+        s_conic = ConicSensor(30.0, body_vector=[0, 0, 1])
+        sc.add_sensor(s_conic)
+        cov_conic = Coverage(_aoi(), [s_conic])
+
+        sc2 = _sc()
+        s_rect = RectangularSensor(30.0, 30.0, body_vector=[0, 0, 1])
+        sc2.add_sensor(s_rect)
+        cov_rect = Coverage(_aoi(), [s_rect])
+
+        r_conic = cov_conic.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        r_rect = cov_rect.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+
+        assert r_rect["final_cumulative"] <= r_conic["final_cumulative"] + 1e-9
+
+    def test_rectangular_wider_along_one_axis(self):
+        sc_narrow = _sc()
+        s_narrow = RectangularSensor(10.0, 10.0, body_vector=[0, 0, 1])
+        sc_narrow.add_sensor(s_narrow)
+
+        sc_wide = _sc()
+        s_wide = RectangularSensor(10.0, 60.0, body_vector=[0, 0, 1])
+        sc_wide.add_sensor(s_wide)
+
+        cov_narrow = Coverage(_aoi(), [s_narrow])
+        cov_wide = Coverage(_aoi(), [s_wide])
+
+        r_narrow = cov_narrow.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        r_wide = cov_wide.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+
+        assert r_wide["final_cumulative"] >= r_narrow["final_cumulative"] - 1e-9
+
+    def test_pointwise_coverage_shape(self):
+        s = self._make_attached()
+        aoi = _aoi()
+        cov = Coverage(aoi, [s])
+        result = cov.pointwise_coverage(_EPOCH, _T_END, max_step=_STEP)
+        N = len(result["t"])
+        M = len(aoi)
+        assert result["visible"].shape == (N, M)
+
+    def test_access_pointwise_runs(self):
+        s = self._make_attached()
+        aoi = _aoi()
+        cov = Coverage(aoi, [s])
+        result = cov.access_pointwise(_EPOCH, _T_END, max_step=_STEP)
+        assert isinstance(result, list)
+        assert len(result) == len(aoi)
+
+    def test_revisit_pointwise_runs(self):
+        s = self._make_attached()
+        aoi = _aoi()
+        cov = Coverage(aoi, [s])
+        result = cov.revisit_pointwise(_EPOCH, _T_END, max_step=_STEP)
+        assert isinstance(result, list)
+        assert len(result) == len(aoi)
+
+    def test_mixed_conic_and_rectangular(self):
+        sc = _sc()
+        s1 = ConicSensor(30.0, body_vector=[0, 0, 1])
+        sc.add_sensor(s1)
+
+        sc2 = _sc()
+        s2 = RectangularSensor(20.0, 40.0, body_vector=[0, 0, 1])
+        sc2.add_sensor(s2)
+
+        aoi = _aoi()
+        cov = Coverage(aoi, [s1, s2])
+        result = cov.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        assert 0.0 <= result["final_cumulative"] <= 1.0
+
+    def test_independent_rectangular_sensor(self):
+        sc = _sc()
+        s = RectangularSensor(30.0, 30.0, attitude_law=FixedAttitudeLaw.nadir())
+        sc.add_sensor(s)
+        cov = Coverage(_aoi(), [s])
+        result = cov.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        assert 0.0 <= result["final_cumulative"] <= 1.0
+
+
+# ===========================================================================
+# Conditioned coverage
+# ===========================================================================
+
+
+class _ConstCondition(AbstractCondition):
+    def __init__(self, value: bool):
+        super().__init__(cache_size=0)
+        self._value = value
+
+    def _compute(self, t):
+        return np.full(len(t), self._value)
+
+    def __repr__(self):
+        return f"ConstCondition({self._value})"
+
+
+class _WindowCondition(AbstractCondition):
+    def __init__(self, epoch, windows_us):
+        super().__init__(cache_size=0)
+        self._epoch = np.asarray(epoch, dtype="datetime64[us]")
+        self._windows = windows_us
+
+    def _compute(self, t):
+        t_off = (t - self._epoch).astype("timedelta64[us]").astype(np.int64)
+        result = np.zeros(len(t), dtype=bool)
+        for s, e in self._windows:
+            result |= (t_off >= s) & (t_off < e)
+        return result
+
+    def __repr__(self):
+        return f"WindowCondition(windows={self._windows})"
+
+
+class TestConditionedCoverage:
+    def _make_attached(self):
+        sc = _sc()
+        s = ConicSensor(30.0, body_vector=[0, 0, 1])
+        sc.add_sensor(s)
+        return s
+
+    def test_always_true_condition_same_as_unconditioned(self):
+        s1 = self._make_attached()
+        s2 = self._make_attached()
+        s2.condition = _ConstCondition(True)
+        aoi = _aoi()
+        cov1 = Coverage(aoi, [s1])
+        cov2 = Coverage(aoi, [s2])
+        r1 = cov1.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        r2 = cov2.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        np.testing.assert_allclose(
+            r1["final_cumulative"], r2["final_cumulative"], atol=1e-6
+        )
+
+    def test_always_false_condition_zero_coverage(self):
+        s = self._make_attached()
+        s.condition = _ConstCondition(False)
+        cov = Coverage(_aoi(), [s])
+        result = cov.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        assert result["final_cumulative"] == 0.0
+        assert result["mean_fraction"] == 0.0
+
+    def test_always_false_pointwise_all_invisible(self):
+        s = self._make_attached()
+        s.condition = _ConstCondition(False)
+        aoi = _aoi()
+        cov = Coverage(aoi, [s])
+        result = cov.pointwise_coverage(_EPOCH, _T_END, max_step=_STEP)
+        assert not result["visible"].any()
+
+    def test_always_false_no_access_intervals(self):
+        s = self._make_attached()
+        s.condition = _ConstCondition(False)
+        aoi = _aoi()
+        cov = Coverage(aoi, [s])
+        result = cov.access_pointwise(_EPOCH, _T_END, max_step=_STEP)
+        for point_intervals in result:
+            assert point_intervals == []
+
+    def test_partial_condition_reduces_coverage(self):
+        s_full = self._make_attached()
+        s_partial = self._make_attached()
+        s_partial.condition = _WindowCondition(_EPOCH, [(0, 1800_000_000)])
+        aoi = _aoi()
+        cov_full = Coverage(aoi, [s_full])
+        cov_partial = Coverage(aoi, [s_partial])
+        r_full = cov_full.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        r_partial = cov_partial.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        assert r_partial["final_cumulative"] <= r_full["final_cumulative"] + 1e-9
+
+    def test_condition_via_constructor(self):
+        s = self._make_attached()
+        s.condition = _ConstCondition(True)
+        cov = Coverage(_aoi(), [s])
+        result = cov.coverage_fraction(_EPOCH, _T_END, max_step=_STEP)
+        assert 0.0 <= result["final_cumulative"] <= 1.0
+
+    def test_conditioned_revisit_time(self):
+        s = self._make_attached()
+        s.condition = _WindowCondition(_EPOCH, [(0, 1800_000_000)])
+        aoi = _aoi()
+        cov = Coverage(aoi, [s])
+        result = cov.revisit_time(_EPOCH, _T_END, max_step=_STEP)
+        assert "max_revisit" in result
+        assert "global_max" in result
+
+    def test_conditioned_revisit_pointwise(self):
+        s = self._make_attached()
+        s.condition = _WindowCondition(_EPOCH, [(0, 1800_000_000)])
+        aoi = _aoi()
+        cov = Coverage(aoi, [s])
+        result = cov.revisit_pointwise(_EPOCH, _T_END, max_step=_STEP)
+        assert isinstance(result, list)
+        assert len(result) == len(aoi)
+        for item in result:
+            assert isinstance(item, np.ndarray)

@@ -4,9 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "missiontools"
-version = "0.1.0"
+version = "0.2.0"
 description = "Space mission analysis and design (SMAD) toolkit"
+readme = "README.md"
 requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICEN[CS]E*"]
 dependencies = [
     "numpy",
     "scipy",
@@ -16,6 +19,10 @@ dependencies = [
     "shapely",
     "itur",
 ]
+
+[project.urls]
+Homepage = "https://github.com/neuroblaze/missiontools"
+Documentation = "https://missiontools.readthedocs.io/"
 
 [project.optional-dependencies]
 dev = [
@@ -32,10 +39,17 @@ plot = [
 where = ["."]
 include = ["missiontools*"]
 
+[tool.setuptools.package-data]
+"missiontools.coverage.geodata" = ["**/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [dependency-groups]
+dev = [
+    "cartopy>=0.25.0",
+    "pytest>=9.0.2",
+]
 docs = [
     "sphinx>=8",
     "furo",

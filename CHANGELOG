@@ -1,0 +1,92 @@
+# missiontools Changelog
+
+
+## 0.2.0
+
+### New Features
+
+- InterferenceAnalysis class for space network interference risk assessment,
+  supporting victim/interfering constellation analysis with SC<->SC, SC<->GS,
+  and GS<->GS link types. Includes result caching and interference_percentage()
+  method for cumulative interference plots.
+
+- Condition system: new missiontools.condition subpackage with AbstractCondition
+  ABC (boolean time-domain predicates with LRU caching) and seven concrete
+  condition classes: SunlightCondition, SubSatelliteRegionCondition,
+  VisibilityCondition, AndCondition, OrCondition, NotCondition, XorCondition.
+  Boolean operators (&, |, ^, ~) enable ergonomic composition.
+
+- ConditionAttitudeLaw: routes between child attitude laws based on a
+  priority-ordered list of (condition, law) pairs, falling through to a
+  default when no condition holds.
+
+- RectangularSensor: pyramidal field-of-view defined by two orthogonal
+  half-angles, extending the sensor hierarchy alongside ConicSensor.
+
+- Sensor condition support: optional condition attribute on sensors that gates
+  when a sensor contributes to coverage, with edge-refined bisection for
+  detecting active intervals over a time window.
+
+- SymmetricAntenna.from_s465: ITU-R S.465 reference Earth station antenna
+  pattern factory method, supporting canonical sidelobe envelope and smooth
+  parabolic main-lobe variants. Includes gmax_dbi override parameter.
+
+- AttitudeLaw limb mode: grazing-tangent pointing at a configurable altitude
+  offset above the central body, with analytical tangent solve in ECEF
+  accounting for WGS84 oblateness.
+
+- AttitudeLaw custom mode: user-supplied callback with signature
+  (t, r_eci, v_eci) -> (N,4) quaternions for full 3-DOF attitude control.
+
+- GroundStation tracking in TrackAttitudeLaw: targets can now be either
+  Spacecraft or GroundStation (geodetic position converted to ECI at each
+  timestep).
+
+- ecef_to_geodetic: WGS84 inverse geodetic transform via Bowring's method.
+
+- New example notebooks: interference_analysis.ipynb, conditional_coverage.ipynb,
+  and updated canada_coverage.ipynb.
+
+
+### Refactoring
+
+- AttitudeLaw refactored from a single mode-dispatching class into an
+  AbstractAttitudeLaw ABC with concrete subclasses: FixedAttitudeLaw,
+  TrackAttitudeLaw, CustomAttitudeLaw, LimbAttitudeLaw.
+
+- Sensor refactored from a flat module into a sensor/ subpackage with
+  AbstractSensor ABC and ConicSensor subclass (mirrors attitude pattern).
+
+- coverage.py split into sampling.py, visibility.py, and coverage.py.
+
+- propagate_analytical split into _propagate_twobody and _propagate_j2.
+
+- CoverageConstraints dataclass introduced to reduce parameter passing in
+  coverage API.
+
+- Extracted shared host_eci_state() and geodetic_up() utility functions.
+
+- Moved _J2000_US to constants.py.
+
+- Standardized _deg suffix for degree-valued parameters in public API.
+
+- Standardized point_density to km² everywhere.
+
+- Attachment guards added to add_sensor, add_solar_config, add_thermal_config.
+
+
+### Bug Fixes
+
+- Fixed _limb_direction GMST recomputation (5x redundant -> 1x via
+  eci_ecef_rotation).
+- Fixed central_body_radius default to EARTH_SEMI_MAJOR_AXIS.
+- Fixed J2 branch raan/arg_p scalar overwrite.
+- Fixed IsotropicAntenna missing super().__init__() call.
+- Fixed NormalVectorSolarConfig.oap() datetime64/datetime conversion breaking
+  timedelta64 arithmetic.
+- Fixed np.trapezoid -> np.trapz for numpy compatibility.
+- Added validation for seconds in _parse_hms.
+- Improved error messages for eccentricity bounds.
+
+
+## 0.1.0 - Initial release
