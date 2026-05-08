@@ -20,13 +20,12 @@ from missiontools import (
     AoI,
     RectangularSensor,
     FixedAttitudeLaw,
-    SubSatelliteRegionCondition,
 )
 from missiontools.cesium import CesiumViewer
 
 
 T0 = np.datetime64("2025-06-01T00:00:00", "us")
-T1 = np.datetime64("2025-06-01T06:00:00", "us")
+T1 = np.datetime64("2025-06-02T00:00:00", "us")
 STEP = np.timedelta64(30, "s")
 
 ALT_KM = 550.0
@@ -45,13 +44,8 @@ COLORS = [
 ]
 
 
-def build_constellation(n: int = 3, *, aoi: AoI | None = None) -> list[Spacecraft]:
-    """Create *n* SSO spacecraft phased equally around one orbital plane.
-
-    If *aoi* is provided, each rectangular sensor is gated with a
-    :class:`SubSatelliteRegionCondition` so the sensor volume only
-    appears when the spacecraft is over the AoI.
-    """
+def build_constellation(n: int = 3) -> list[Spacecraft]:
+    """Create *n* SSO spacecraft phased equally around one orbital plane."""
     sats = []
     for k in range(n):
         sc = Spacecraft.sunsync(
@@ -60,21 +54,18 @@ def build_constellation(n: int = 3, *, aoi: AoI | None = None) -> list[Spacecraf
             epoch=T0,
             ma_deg=k * 360.0 / n,
         )
-        sensor_kwargs: dict = dict(
+        sensor = RectangularSensor(
             theta1_deg=10.0,
             theta2_deg=40.0,
             attitude_law=FixedAttitudeLaw.nadir(),
         )
-        if aoi is not None:
-            sensor_kwargs["condition"] = SubSatelliteRegionCondition(sc, aoi)
-        sensor = RectangularSensor(**sensor_kwargs)
         sc.add_sensor(sensor)
         sats.append(sc)
     return sats
 
 
 def main() -> None:
-    constellation = build_constellation(3, aoi=AOI_US)
+    constellation = build_constellation(3)
 
     viewer = CesiumViewer(title="SSO Constellation — US Coverage")
 

@@ -479,20 +479,18 @@ def build_sensor_packets(
             czml_key: sensor_props,
         }
 
-        if sensor.condition is not None:
-            cond = sensor.condition.at(t)
-            if not cond.any():
-                packet["show"] = False
-            elif not cond.all():
-                show_vals: list = []
-                epoch_s = ((t - epoch) / np.timedelta64(1, "s")).astype(np.float64)
-                for i in range(len(t)):
-                    show_vals.append(float(epoch_s[i]))
-                    show_vals.append(bool(cond[i]))
-                packet["show"] = {
-                    "epoch": _datetime64_to_iso(epoch),
-                    "boolean": show_vals,
-                }
+        # TODO: condition-gated sensor visibility
+        # The cesium-sensor-volumes plugin ignores `show` inside sensor
+        # sub-objects (it only processes xHalfAngle, yHalfAngle, materials).
+        # Attempts to work around this:
+        #  - packet-level `show: {epoch, boolean}` → Cesium SampledProperty,
+        #    but the visualizer also checks internal `m._show` which defaults
+        #    to true and the plugin never exposes a setter for it.
+        #  - `availability` intervals → zero-length interval `T/T` is
+        #    rejected as invalid ISO8601 by Cesium.
+        # A proper fix would require modifying the plugin to expose the
+        # CustomSensorVolume.show setter from RectangularPyramidSensorVolume
+        # and have it respect packet-level entity.show.
 
         packets.append(packet)
 
