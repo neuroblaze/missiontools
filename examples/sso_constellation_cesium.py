@@ -20,6 +20,7 @@ from missiontools import (
     AoI,
     RectangularSensor,
     FixedAttitudeLaw,
+    SubSatelliteRegionCondition,
 )
 from missiontools.cesium import CesiumViewer
 
@@ -44,8 +45,13 @@ COLORS = [
 ]
 
 
-def build_constellation(n: int = 3) -> list[Spacecraft]:
-    """Create *n* SSO spacecraft phased equally around one orbital plane."""
+def build_constellation(n: int = 3, *, aoi: AoI | None = None) -> list[Spacecraft]:
+    """Create *n* SSO spacecraft phased equally around one orbital plane.
+
+    If *aoi* is provided, each rectangular sensor is gated with a
+    :class:`SubSatelliteRegionCondition` so the sensor volume only
+    appears when the spacecraft is over the AoI.
+    """
     sats = []
     for k in range(n):
         sc = Spacecraft.sunsync(
@@ -54,30 +60,27 @@ def build_constellation(n: int = 3) -> list[Spacecraft]:
             epoch=T0,
             ma_deg=k * 360.0 / n,
         )
-        sensor = RectangularSensor(
+        sensor_kwargs: dict = dict(
             theta1_deg=10.0,
             theta2_deg=40.0,
             attitude_law=FixedAttitudeLaw.nadir(),
         )
+        if aoi is not None:
+            sensor_kwargs["condition"] = SubSatelliteRegionCondition(sc, aoi)
+        sensor = RectangularSensor(**sensor_kwargs)
         sc.add_sensor(sensor)
         sats.append(sc)
     return sats
 
 
 def main() -> None:
-    constellation = build_constellation(3)
+    constellation = build_constellation(3, aoi=AOI_US)
 
     viewer = CesiumViewer(title="SSO Constellation — US Coverage")
 
     for i, sc in enumerate(constellation):
         viewer.add_spacecraft(
-            sc,
-            T0,
-            T1,
-            STEP,
-            color=COLORS[i],
-            label=f"SSO-{i + 1}",
-	    show_sensors=True
+            sc, T0, T1, STEP, color=COLORS[i], label=f"SSO-{i + 1}", show_sensors=True
         )
 
     viewer.add_ground_station(GS_WHITE_SANDS, label="White Sands")

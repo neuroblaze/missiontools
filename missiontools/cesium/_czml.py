@@ -47,6 +47,7 @@ def _build_preamble(
     """Build the CZML document preamble (id='document') with clock settings."""
     from czml3 import Packet
     from czml3.properties import Clock
+    from czml3.types import TimeInterval
     from czml3.enums import ClockRanges, ClockSteps
 
     return Packet(
@@ -58,6 +59,10 @@ def _build_preamble(
             multiplier=60,
             range=ClockRanges.LOOP_STOP,
             step=ClockSteps.SYSTEM_CLOCK_MULTIPLIER,
+            interval=TimeInterval(
+                start=_datetime64_to_iso(t_start),
+                end=_datetime64_to_iso(t_end),
+            ),
         ),
     )
 
@@ -431,6 +436,8 @@ def build_sensor_packets(
     sensor_alpha_255 = round(ca * 0.2)
     intersection_alpha_255 = round(ca * 0.5)
 
+    epoch_s = ((t - epoch) / np.timedelta64(1, "s")).astype(np.float64)
+
     packets: list[dict] = []
     for idx, sensor in enumerate(spacecraft.sensors):
         quat_vals = _sensor_quaternions_ecef(sensor, r, v, t, epoch)
@@ -445,9 +452,21 @@ def build_sensor_packets(
             },
         }
 
+        if sensor.condition is not None:
+            cond = sensor.condition.at(t)
+            show_vals: list = []
+            for i in range(len(t)):
+                show_vals.append(float(epoch_s[i]))
+                show_vals.append(bool(cond[i]))
+            sensor_props["show"] = {
+                "epoch": _datetime64_to_iso(epoch),
+                "boolean": show_vals,
+            }
+        else:
+            sensor_props["show"] = True
+
         if isinstance(sensor, ConicSensor):
             sensor_props.update(
-                show=True,
                 innerHalfAngle=0.0,
                 outerHalfAngle=sensor.half_angle_rad,
                 minimumClockAngle=0.0,
@@ -456,7 +475,6 @@ def build_sensor_packets(
             czml_key = "agi_conicSensor"
         elif isinstance(sensor, RectangularSensor):
             sensor_props.update(
-                show=True,
                 xHalfAngle=sensor.theta2_rad,
                 yHalfAngle=sensor.theta1_rad,
             )
