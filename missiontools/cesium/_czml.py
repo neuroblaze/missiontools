@@ -481,15 +481,18 @@ def build_sensor_packets(
 
         if sensor.condition is not None:
             cond = sensor.condition.at(t)
-            epoch_s = ((t - epoch) / np.timedelta64(1, "s")).astype(np.float64)
-            show_vals: list = []
-            for i in range(len(t)):
-                show_vals.append(float(epoch_s[i]))
-                show_vals.append(bool(cond[i]))
-            packet["show"] = {
-                "epoch": _datetime64_to_iso(epoch),
-                "boolean": show_vals,
-            }
+            if not cond.any():
+                packet["show"] = False
+            elif not cond.all():
+                show_vals: list = []
+                epoch_s = ((t - epoch) / np.timedelta64(1, "s")).astype(np.float64)
+                for i in range(len(t)):
+                    show_vals.append(float(epoch_s[i]))
+                    show_vals.append(bool(cond[i]))
+                packet["show"] = {
+                    "epoch": _datetime64_to_iso(epoch),
+                    "boolean": show_vals,
+                }
 
         packets.append(packet)
 
