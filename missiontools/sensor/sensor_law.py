@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from ..orbit.frames import eci_to_lvlh, eci_to_ecef
+from ..orbit.frames import _lvlh_basis, eci_to_lvlh, eci_to_ecef
 
 
 def _euler_zyx_to_boresight(
@@ -604,10 +604,13 @@ class RectangularSensor(AbstractSensor):
         v_eci: npt.ArrayLike,
         t: npt.ArrayLike,
     ) -> npt.NDArray[np.floating]:
-        """Sensor frame axes in ECI as columns of a (3, 3) matrix.
+        """Sensor frame axes in ECI as columns.
 
         Returns ``[u1 | u2 | boresight]`` where each column is a unit
         vector in ECI.
+
+        For a scalar state the result has shape ``(3, 3)``.
+        For an ``(N, 3)`` array input it has shape ``(N, 3, 3)``.
         """
         if self._mode == "independent":
             law = self._attitude_law
@@ -615,7 +618,10 @@ class RectangularSensor(AbstractSensor):
             u2 = law.rotate_from_body(np.array([0.0, 1.0, 0.0]), r_eci, v_eci, t)
             bz = law.rotate_from_body(np.array([0.0, 0.0, 1.0]), r_eci, v_eci, t)
             if u1.ndim == 2:
-                u1, u2, bz = u1[0], u2[0], bz[0]
+                return np.stack(
+                    [np.column_stack([u1[i], u2[i], bz[i]]) for i in range(len(u1))],
+                    axis=0,
+                )
             return np.column_stack([u1, u2, bz])
 
         self._require_body()
@@ -625,7 +631,10 @@ class RectangularSensor(AbstractSensor):
         u2 = law.rotate_from_body(frame_body[:, 1], r_eci, v_eci, t)
         bz = law.rotate_from_body(frame_body[:, 2], r_eci, v_eci, t)
         if u1.ndim == 2:
-            u1, u2, bz = u1[0], u2[0], bz[0]
+            return np.stack(
+                [np.column_stack([u1[i], u2[i], bz[i]]) for i in range(len(u1))],
+                axis=0,
+            )
         return np.column_stack([u1, u2, bz])
 
     def sensor_frame_lvlh(
@@ -634,12 +643,23 @@ class RectangularSensor(AbstractSensor):
         v_eci: npt.ArrayLike,
         t: npt.ArrayLike,
     ) -> npt.NDArray[np.floating]:
-        """Sensor frame axes in LVLH as columns of a (3, 3) matrix."""
+        """Sensor frame axes in LVLH.
+
+        Returns ``[u1 | u2 | boresight]`` where each column is a unit
+        vector in LVLH.
+
+        For scalar input the result has shape ``(3, 3)``; for ``(N, 3)``
+        array input it has shape ``(N, 3, 3)``.
+        """
         frame_eci = self.sensor_frame_eci(r_eci, v_eci, t)
         r = np.asarray(r_eci, dtype=np.float64)
+        v = np.asarray(v_eci, dtype=np.float64)
         r_2d = np.atleast_2d(r)
-        v_2d = np.atleast_2d(np.asarray(v_eci, dtype=np.float64))
-        return eci_to_lvlh(frame_eci.T, r_2d, v_2d).T
+        v_2d = np.atleast_2d(v)
+        Q = _lvlh_basis(r_2d, v_2d)
+        if frame_eci.ndim == 3:
+            return np.einsum("nij,njk->nik", Q, frame_eci)
+        return Q[0] @ frame_eci
 
     def pointing_eci(
         self,

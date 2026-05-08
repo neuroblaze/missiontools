@@ -52,4 +52,6 @@ This project is my first foray into agentic development. I make the architecture
 
 ## Acknowledgements
  - [Natural Earth](https://www.naturalearthdata.com) for the country/state/province shapefiles
+ - [CesiumJS](https://cesium.com/cesiumjs/) for the 3D globe visualization engine
+ - [cesium-sensor-volumes](https://github.com/Flowm/cesium-sensor-volumes) (Apache 2.0) for sensor field-of-view rendering
  - Claude Sonnet 4.6 & Opus 4.6 for doing the implementation gruntwork

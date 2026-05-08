@@ -457,8 +457,8 @@ def build_sensor_packets(
         elif isinstance(sensor, RectangularSensor):
             sensor_props.update(
                 show=True,
-                xHalfAngle=sensor.theta1_rad,
-                yHalfAngle=sensor.theta2_rad,
+                xHalfAngle=sensor.theta2_rad,
+                yHalfAngle=sensor.theta1_rad,
             )
             czml_key = "agi_rectangularSensor"
         else:

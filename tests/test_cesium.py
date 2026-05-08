@@ -456,8 +456,8 @@ class TestBuildSensorPackets:
         assert "agi_conicSensor" not in p
 
         sensor = p["agi_rectangularSensor"]
-        assert abs(sensor["xHalfAngle"] - np.radians(10.0)) < 1e-12
-        assert abs(sensor["yHalfAngle"] - np.radians(40.0)) < 1e-12
+        assert abs(sensor["xHalfAngle"] - np.radians(40.0)) < 1e-12
+        assert abs(sensor["yHalfAngle"] - np.radians(10.0)) < 1e-12
         assert sensor["radius"] == 6_771_000.0
 
     def test_multiple_sensors(self):
