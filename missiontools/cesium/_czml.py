@@ -470,6 +470,7 @@ def build_sensor_packets(
         packet: dict = {
             "id": f"{packet_id}-sensor-{idx}",
             "name": f"{packet_id} sensor {idx}",
+            "availability": (f"{_datetime64_to_iso(t[0])}/{_datetime64_to_iso(t[-1])}"),
             "position": {"reference": f"{packet_id}#position"},
             "orientation": {
                 "epoch": _datetime64_to_iso(epoch),
@@ -479,21 +480,16 @@ def build_sensor_packets(
         }
 
         if sensor.condition is not None:
-            intervals = sensor.condition.intervals(t[0], t[-1])
-            if intervals:
-                parts = [
-                    f"{_datetime64_to_iso(start)}/{_datetime64_to_iso(end)}"
-                    for start, end in intervals
-                ]
-                packet["availability"] = ",".join(parts)
-            else:
-                packet["availability"] = (
-                    f"{_datetime64_to_iso(t[0])}/{_datetime64_to_iso(t[0])}"
-                )
-        else:
-            packet["availability"] = (
-                f"{_datetime64_to_iso(t[0])}/{_datetime64_to_iso(t[-1])}"
-            )
+            cond = sensor.condition.at(t)
+            epoch_s = ((t - epoch) / np.timedelta64(1, "s")).astype(np.float64)
+            show_vals: list = []
+            for i in range(len(t)):
+                show_vals.append(float(epoch_s[i]))
+                show_vals.append(bool(cond[i]))
+            packet["show"] = {
+                "epoch": _datetime64_to_iso(epoch),
+                "boolean": show_vals,
+            }
 
         packets.append(packet)
 
