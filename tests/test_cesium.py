@@ -430,8 +430,8 @@ class TestBuildSensorPackets:
         assert "epoch" in p["orientation"]
 
         sensor = p["agi_conicSensor"]
-        assert sensor["show"] is True
         assert sensor["radius"] == 6_771_000.0
+        assert "show" not in sensor
         assert abs(sensor["outerHalfAngle"] - np.radians(10.0)) < 1e-12
         assert abs(sensor["innerHalfAngle"]) < 1e-12
         mat_color = sensor["lateralSurfaceMaterial"]["solidColor"]["color"]["rgba"]

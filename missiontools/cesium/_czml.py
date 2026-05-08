@@ -452,18 +452,27 @@ def build_sensor_packets(
             },
         }
 
+        packet: dict = {
+            "id": f"{packet_id}-sensor-{idx}",
+            "name": f"{packet_id} sensor {idx}",
+            "availability": (f"{_datetime64_to_iso(t[0])}/{_datetime64_to_iso(t[-1])}"),
+            "position": {"reference": f"{packet_id}#position"},
+            "orientation": {
+                "epoch": _datetime64_to_iso(epoch),
+                "unitQuaternion": quat_vals,
+            },
+        }
+
         if sensor.condition is not None:
             cond = sensor.condition.at(t)
             show_vals: list = []
             for i in range(len(t)):
                 show_vals.append(float(epoch_s[i]))
                 show_vals.append(bool(cond[i]))
-            sensor_props["show"] = {
+            packet["show"] = {
                 "epoch": _datetime64_to_iso(epoch),
                 "boolean": show_vals,
             }
-        else:
-            sensor_props["show"] = True
 
         if isinstance(sensor, ConicSensor):
             sensor_props.update(
@@ -482,21 +491,8 @@ def build_sensor_packets(
         else:
             continue
 
-        packets.append(
-            {
-                "id": f"{packet_id}-sensor-{idx}",
-                "name": f"{packet_id} sensor {idx}",
-                "availability": (
-                    f"{_datetime64_to_iso(t[0])}/{_datetime64_to_iso(t[-1])}"
-                ),
-                "position": {"reference": f"{packet_id}#position"},
-                "orientation": {
-                    "epoch": _datetime64_to_iso(epoch),
-                    "unitQuaternion": quat_vals,
-                },
-                czml_key: sensor_props,
-            }
-        )
+        packet[czml_key] = sensor_props
+        packets.append(packet)
 
     return packets
 
