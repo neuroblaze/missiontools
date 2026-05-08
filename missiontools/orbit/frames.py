@@ -244,9 +244,12 @@ def ecef_to_geodetic(
     sin_lat = np.sin(lat)
     cos_lat = np.cos(lat)
     N = a / np.sqrt(1.0 - e2 * sin_lat**2)
-    alt = np.where(
-        cos_lat != 0.0, p / cos_lat - N, np.abs(z) / np.abs(sin_lat) - N * (1.0 - e2)
-    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        alt = np.where(
+            np.abs(cos_lat) > 1e-12,
+            p / cos_lat - N,
+            np.abs(z) / np.abs(sin_lat) - N * (1.0 - e2),
+        )
 
     if scalar:
         return lat[0], lon[0], alt[0]

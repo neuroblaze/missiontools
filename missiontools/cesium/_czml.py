@@ -436,8 +436,6 @@ def build_sensor_packets(
     sensor_alpha_255 = round(ca * 0.2)
     intersection_alpha_255 = round(ca * 0.5)
 
-    epoch_s = ((t - epoch) / np.timedelta64(1, "s")).astype(np.float64)
-
     packets: list[dict] = []
     for idx, sensor in enumerate(spacecraft.sensors):
         quat_vals = _sensor_quaternions_ecef(sensor, r, v, t, epoch)
@@ -451,28 +449,6 @@ def build_sensor_packets(
                 "solidColor": {"color": {"rgba": [cr, cg, cb, sensor_alpha_255]}}
             },
         }
-
-        packet: dict = {
-            "id": f"{packet_id}-sensor-{idx}",
-            "name": f"{packet_id} sensor {idx}",
-            "availability": (f"{_datetime64_to_iso(t[0])}/{_datetime64_to_iso(t[-1])}"),
-            "position": {"reference": f"{packet_id}#position"},
-            "orientation": {
-                "epoch": _datetime64_to_iso(epoch),
-                "unitQuaternion": quat_vals,
-            },
-        }
-
-        if sensor.condition is not None:
-            cond = sensor.condition.at(t)
-            show_vals: list = []
-            for i in range(len(t)):
-                show_vals.append(float(epoch_s[i]))
-                show_vals.append(bool(cond[i]))
-            packet["show"] = {
-                "epoch": _datetime64_to_iso(epoch),
-                "boolean": show_vals,
-            }
 
         if isinstance(sensor, ConicSensor):
             sensor_props.update(
@@ -491,7 +467,34 @@ def build_sensor_packets(
         else:
             continue
 
-        packet[czml_key] = sensor_props
+        packet: dict = {
+            "id": f"{packet_id}-sensor-{idx}",
+            "name": f"{packet_id} sensor {idx}",
+            "position": {"reference": f"{packet_id}#position"},
+            "orientation": {
+                "epoch": _datetime64_to_iso(epoch),
+                "unitQuaternion": quat_vals,
+            },
+            czml_key: sensor_props,
+        }
+
+        if sensor.condition is not None:
+            intervals = sensor.condition.intervals(t[0], t[-1])
+            if intervals:
+                parts = [
+                    f"{_datetime64_to_iso(start)}/{_datetime64_to_iso(end)}"
+                    for start, end in intervals
+                ]
+                packet["availability"] = ",".join(parts)
+            else:
+                packet["availability"] = (
+                    f"{_datetime64_to_iso(t[0])}/{_datetime64_to_iso(t[0])}"
+                )
+        else:
+            packet["availability"] = (
+                f"{_datetime64_to_iso(t[0])}/{_datetime64_to_iso(t[-1])}"
+            )
+
         packets.append(packet)
 
     return packets
