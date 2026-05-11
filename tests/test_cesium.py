@@ -51,22 +51,24 @@ class TestPreamble:
 
 
 class TestSpacecraftPackets:
-    def test_produces_one_packet(self):
+    @staticmethod
+    def _packets(*args, **kwargs):
         from missiontools.cesium._czml import build_spacecraft_packets
 
+        return build_spacecraft_packets(*args, **kwargs)
+
+    def test_produces_one_packet(self):
         sc = _make_sc()
         t0 = _EPOCH
         t1 = _EPOCH + np.timedelta64(5400, "s")
-        packets = build_spacecraft_packets(sc, t0, t1, np.timedelta64(60, "s"))
+        packets, _model_path = self._packets(sc, t0, t1, np.timedelta64(60, "s"))
         assert len(packets) == 1
 
     def test_packet_has_inertial_position(self):
-        from missiontools.cesium._czml import build_spacecraft_packets
-
         sc = _make_sc()
         t0 = _EPOCH
         t1 = _EPOCH + np.timedelta64(5400, "s")
-        packets = build_spacecraft_packets(sc, t0, t1, np.timedelta64(60, "s"))
+        packets, _model_path = self._packets(sc, t0, t1, np.timedelta64(60, "s"))
         data = packets[0].model_dump(exclude_none=True)
         pos = data["position"]
         assert pos["referenceFrame"] == "INERTIAL"
@@ -74,35 +76,30 @@ class TestSpacecraftPackets:
         assert "cartesian" in pos
 
     def test_cartesian_values_are_seconds_since_epoch(self):
-        from missiontools.cesium._czml import build_spacecraft_packets
-
         sc = _make_sc()
         t0 = _EPOCH
         t1 = _EPOCH + np.timedelta64(120, "s")
-        packets = build_spacecraft_packets(sc, t0, t1, np.timedelta64(60, "s"))
+        packets, _model_path = self._packets(sc, t0, t1, np.timedelta64(60, "s"))
         cartesian = packets[0].model_dump(exclude_none=True)["position"]["cartesian"]
         assert cartesian[0] == 0.0
         assert abs(cartesian[4] - 60.0) < 1e-9
         assert abs(cartesian[8] - 120.0) < 1e-9
 
     def test_has_point_and_path(self):
-        from missiontools.cesium._czml import build_spacecraft_packets
-
         sc = _make_sc()
         t0 = _EPOCH
         t1 = _EPOCH + np.timedelta64(5400, "s")
-        data = build_spacecraft_packets(sc, t0, t1)[0].model_dump(exclude_none=True)
+        packets, _model_path = self._packets(sc, t0, t1)
+        data = packets[0].model_dump(exclude_none=True)
         assert "point" in data
         assert "path" in data
         assert "label" in data
 
     def test_custom_id_and_label(self):
-        from missiontools.cesium._czml import build_spacecraft_packets
-
         sc = _make_sc()
         t0 = _EPOCH
         t1 = _EPOCH + np.timedelta64(5400, "s")
-        packets = build_spacecraft_packets(
+        packets, _model_path = self._packets(
             sc,
             t0,
             t1,
@@ -116,21 +113,18 @@ class TestSpacecraftPackets:
         assert data["label"]["text"] == "ISS"
 
     def test_empty_propagation_returns_no_packets(self):
-        from missiontools.cesium._czml import build_spacecraft_packets
-
         sc = _make_sc()
         t0 = _EPOCH
         t1 = t0
-        packets = build_spacecraft_packets(sc, t0, t1, np.timedelta64(60, "s"))
+        packets, model_path = self._packets(sc, t0, t1, np.timedelta64(60, "s"))
         assert packets == []
+        assert model_path is None
 
     def test_custom_color(self):
-        from missiontools.cesium._czml import build_spacecraft_packets
-
         sc = _make_sc()
         t0 = _EPOCH
         t1 = _EPOCH + np.timedelta64(5400, "s")
-        packets = build_spacecraft_packets(
+        packets, _model_path = self._packets(
             sc,
             t0,
             t1,
@@ -139,6 +133,59 @@ class TestSpacecraftPackets:
         )
         data = packets[0].model_dump(exclude_none=True)
         assert data["point"]["color"]["rgba"] == [255, 0, 0, 255]
+
+    def test_show_model_default_true(self):
+        sc = _make_sc()
+        t0 = _EPOCH
+        t1 = _EPOCH + np.timedelta64(300, "s")
+        packets, _model_path = self._packets(sc, t0, t1, np.timedelta64(60, "s"))
+        data = packets[0].model_dump(exclude_none=True)
+        assert "model" in data
+        assert "gltf" in data["model"]
+        assert data["model"]["gltf"] == "Cesium/Models/default_spacecraft.glb"
+        assert "orientation" in data
+        assert "unitQuaternion" in data["orientation"]
+        assert data["point"]["show"] is False
+
+    def test_show_model_false_uses_point(self):
+        sc = _make_sc()
+        t0 = _EPOCH
+        t1 = _EPOCH + np.timedelta64(300, "s")
+        packets, _model_path = self._packets(
+            sc, t0, t1, np.timedelta64(60, "s"), show_model=False
+        )
+        data = packets[0].model_dump(exclude_none=True)
+        assert "model" not in data
+        assert "orientation" not in data
+        assert data["point"]["show"] is True
+
+    def test_custom_model_path(self):
+        sc = _make_sc()
+        t0 = _EPOCH
+        t1 = _EPOCH + np.timedelta64(300, "s")
+        from missiontools.cesium._czml import build_spacecraft_packets
+
+        packets, model_path = build_spacecraft_packets(
+            sc,
+            t0,
+            t1,
+            np.timedelta64(60, "s"),
+            model="/tmp/my_model.glb",
+            packet_id="sc-1",
+        )
+        data = packets[0].model_dump(exclude_none=True)
+        assert data["model"]["gltf"] == "models/sc-1.glb"
+        assert model_path == "/tmp/my_model.glb"
+
+    def test_model_scale(self):
+        sc = _make_sc()
+        t0 = _EPOCH
+        t1 = _EPOCH + np.timedelta64(300, "s")
+        packets, _model_path = self._packets(
+            sc, t0, t1, np.timedelta64(60, "s"), scale=2.5
+        )
+        data = packets[0].model_dump(exclude_none=True)
+        assert data["model"]["scale"] == 2.5
 
 
 # ===========================================================================
@@ -265,7 +312,7 @@ class TestDocumentSerialization:
             _build_preamble(t0, t1),
             *build_spacecraft_packets(
                 sc, t0, t1, np.timedelta64(60, "s"), packet_id="sc-1"
-            ),
+            )[0],
             build_groundstation_packet(gs, packet_id="gs-1"),
         ]
         json_str = build_czml_document(packets)
@@ -552,7 +599,7 @@ class TestBuildCzmlDocumentWithSensors:
             _build_preamble(t0, t1),
             *build_spacecraft_packets(
                 sc, t0, t1, np.timedelta64(60, "s"), packet_id="sc-1"
-            ),
+            )[0],
         ]
         sensor_dict = {
             "id": "sc-1-sensor-0",
@@ -575,7 +622,7 @@ class TestBuildCzmlDocumentWithSensors:
         t0, t1 = _EPOCH, _EPOCH + np.timedelta64(5400, "s")
         packets = [
             _build_preamble(t0, t1),
-            *build_spacecraft_packets(sc, t0, t1, packet_id="sc-1"),
+            *build_spacecraft_packets(sc, t0, t1, packet_id="sc-1")[0],
         ]
         json_str = build_czml_document(packets)
         parsed = json.loads(json_str)

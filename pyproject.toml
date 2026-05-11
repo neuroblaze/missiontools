@@ -18,6 +18,11 @@ dependencies = [
     "pyshp",
     "shapely",
     "itur",
+    "twine>=6.2.0",
+    "pyqt6>=6.11.0",
+    "pyqtwebengine>=5.15.7",
+    "pywebview[qt]>=6.2.1",
+    "trimesh>=4.12.2",
 ]
 
 [project.urls]
@@ -34,6 +39,10 @@ dev = [
 plot = [
     "cartopy",
 ]
+cesium = [
+    "czml3>=3.0",
+    "pywebview>=5.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -41,6 +50,8 @@ include = ["missiontools*"]
 
 [tool.setuptools.package-data]
 "missiontools.coverage.geodata" = ["**/*"]
+"missiontools.cesium._templates" = ["*.html"]
+"missiontools.cesium._static" = ["**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

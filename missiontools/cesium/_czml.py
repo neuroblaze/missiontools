@@ -67,6 +67,40 @@ def _build_preamble(
     )
 
 
+def _spacecraft_quaternions_ecef(
+    spacecraft: Spacecraft,
+    r_eci: np.ndarray,
+    v_eci: np.ndarray,
+    t: np.ndarray,
+    epoch: np.datetime64,
+) -> list[float] | None:
+    """Compute time-sampled spacecraft body orientation quaternions in ECEF.
+
+    Returns a flat list ``[t0, qx, qy, qz, qw, …]`` with
+    epoch-relative seconds for CZML ``unitQuaternion`` values,
+    or ``None`` if orientation cannot be computed.
+    """
+    from scipy.spatial.transform import Rotation
+
+    law = spacecraft.attitude_law
+    x = np.atleast_2d(law.rotate_from_body([1, 0, 0], r_eci, v_eci, t))
+    y = np.atleast_2d(law.rotate_from_body([0, 1, 0], r_eci, v_eci, t))
+    z = np.atleast_2d(law.rotate_from_body([0, 0, 1], r_eci, v_eci, t))
+    frames_eci = np.stack([x, y, z], axis=-1)  # (N, 3, 3)
+
+    Rz = _eci_to_ecef_rotations(t)
+    frames_ecef = np.einsum("nij,njk->nik", Rz, frames_eci)
+    quats = Rotation.from_matrix(frames_ecef).as_quat()
+
+    epoch_s = ((t - epoch) / np.timedelta64(1, "s")).astype(np.float64)
+
+    values: list[float] = []
+    for i in range(len(t)):
+        values.append(float(epoch_s[i]))
+        values.extend(quats[i].tolist())
+    return values
+
+
 def build_spacecraft_packets(
     spacecraft: Spacecraft,
     t_start: np.datetime64,
@@ -77,7 +111,10 @@ def build_spacecraft_packets(
     path_color: tuple[int, int, int, int] | None = None,
     label: str | None = None,
     packet_id: str | None = None,
-):
+    show_model: bool = True,
+    model: str | None = None,
+    scale: float = 1.0,
+) -> tuple[list, str | None]:
     """Generate CZML packets for a :class:`~missiontools.Spacecraft`.
 
     Positions are expressed in ECI (INERTIAL reference frame) using the
@@ -96,10 +133,20 @@ def build_spacecraft_packets(
         Display name.  Defaults to the packet id.
     packet_id : str | None
         Unique CZML id.  Defaults to ``"sc-<N>"``.
+    show_model : bool
+        If ``True``, render a 3D model at the spacecraft position.
+    model : str | None
+        Path to a glTF model file.  When ``None`` and *show_model* is
+        ``True``, a default bevelled cube with face labels is used.
+    scale : float
+        Uniform scale factor applied to the 3D model.  Default 1.0.
 
     Returns
     -------
     list[Packet]
+        CZML packets for the spacecraft.
+    str | None
+        Absolute path to the model file to serve, or ``None``.
     """
     from czml3 import Packet
     from czml3.properties import (
@@ -107,6 +154,8 @@ def build_spacecraft_packets(
         Path,
         Color,
         Label,
+        Model,
+        Orientation,
         PolylineMaterial,
         SolidColorMaterial,
     )
@@ -116,9 +165,10 @@ def build_spacecraft_packets(
     state = spacecraft.propagate(t_start, t_end, step)
     t = state["t"]
     r = state["r"]
+    v = state["v"]
 
     if len(t) == 0:
-        return []
+        return [], None
 
     epoch = t[0]
     cartesian_values: list[float] = []
@@ -132,6 +182,31 @@ def build_spacecraft_packets(
     pid = packet_id or f"sc-{id(spacecraft) & 0xFFFF:x}"
     display_label = label or pid
 
+    model_path: str | None = None
+    point_show = False if show_model else True
+    point = Point(
+        show=point_show,
+        pixelSize=10,
+        color=Color(rgba=list(color)),
+    )
+    model_prop = None
+    orientation = None
+
+    if show_model:
+        if model is not None:
+            model_path = model
+            gltf_uri = f"models/{pid}.glb"
+        else:
+            gltf_uri = "Cesium/Models/default_spacecraft.glb"
+
+        model_prop = Model(gltf=gltf_uri, scale=scale)
+        quat_vals = _spacecraft_quaternions_ecef(spacecraft, r, v, t, epoch)
+        if quat_vals is not None:
+            orientation = Orientation(
+                epoch=_datetime64_to_iso(epoch),
+                unitQuaternion=quat_vals,
+            )
+
     packet = Packet(
         id=pid,
         name=display_label,
@@ -144,10 +219,9 @@ def build_spacecraft_packets(
             "epoch": _datetime64_to_iso(epoch),
             "cartesian": Cartesian3Value(values=cartesian_values),
         },
-        point=Point(
-            pixelSize=10,
-            color=Color(rgba=list(color)),
-        ),
+        point=point,
+        model=model_prop,
+        orientation=orientation,
         label=Label(
             text=display_label,
             fillColor=Color(rgba=list(color)),
@@ -165,7 +239,7 @@ def build_spacecraft_packets(
         ),
     )
 
-    return [packet]
+    return [packet], model_path
 
 
 def build_groundstation_packet(

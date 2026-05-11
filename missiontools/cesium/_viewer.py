@@ -67,6 +67,7 @@ class CesiumViewer:
         self._sc_counter = 0
         self._gs_counter = 0
         self._aoi_counter = 0
+        self._model_files: dict[str, str] = {}
 
     def _ensure_preamble(self) -> None:
         if self._has_preamble:
@@ -113,6 +114,9 @@ class CesiumViewer:
         label: str | None = None,
         show_sensors: bool = False,
         sensor_length: float | None = None,
+        show_model: bool = True,
+        model: str | None = None,
+        scale: float = 1.0,
     ) -> None:
         """Add a spacecraft orbit to the visualization.
 
@@ -137,12 +141,21 @@ class CesiumViewer:
             Sensor volume radius in metres (distance from spacecraft to
             the far end of the cone/pyramid).  Defaults to the perigee
             distance ``a * (1 - e)``.
+        show_model : bool
+            If ``True`` (default), render a 3D model at the spacecraft
+            position.  When ``False``, a coloured point is shown instead.
+        model : str | None
+            Path to a glTF model file (``.glb`` or ``.gltf``).  When
+            ``None`` and *show_model* is ``True``, a default bevelled
+            cube with embossed face labels is rendered.
+        scale : float
+            Uniform scale factor for the 3D model.  Default 1.0.
         """
         from ._czml import build_spacecraft_packets
 
         self._sc_counter += 1
         packet_id = f"sc-{self._sc_counter}"
-        packets = build_spacecraft_packets(
+        packets, model_path = build_spacecraft_packets(
             spacecraft,
             t_start,
             t_end,
@@ -151,9 +164,30 @@ class CesiumViewer:
             path_color=path_color,
             label=label,
             packet_id=packet_id,
+            show_model=show_model,
+            model=model,
+            scale=scale,
         )
         self._update_time_range(t_start, t_end)
         self._packets.extend(packets)
+
+        if model_path is not None:
+            self._model_files[packet_id] = model_path
+            if model is not None:
+                base_dir = os.path.dirname(model_path)
+                bin_name = os.path.splitext(os.path.basename(model_path))[0]
+                bin_path = os.path.join(base_dir, f"{bin_name}.bin")
+                tex_candidates = [
+                    os.path.join(base_dir, f"{bin_name}.png"),
+                    os.path.join(base_dir, f"{bin_name}.jpg"),
+                    os.path.join(base_dir, f"{bin_name}_0.png"),
+                    os.path.join(base_dir, f"{bin_name}_0.jpg"),
+                ]
+                for tex_path in tex_candidates:
+                    if os.path.isfile(tex_path):
+                        self._model_files[
+                            f"{packet_id}_tex_{os.path.basename(tex_path)}"
+                        ] = tex_path
 
         if show_sensors and packets:
             from ._czml import build_sensor_packets
@@ -295,6 +329,31 @@ class CesiumViewer:
             shutil.copytree(
                 static_cesium, os.path.join(tmp_dir, "Cesium"), dirs_exist_ok=True
             )
+
+        if self._model_files:
+            models_dir = os.path.join(tmp_dir, "models")
+            os.makedirs(models_dir, exist_ok=True)
+            for key, src_path in self._model_files.items():
+                dest = os.path.join(models_dir, os.path.basename(src_path))
+                shutil.copy2(src_path, dest)
+                if key.endswith("_tex_"):
+                    continue
+                base = os.path.splitext(src_path)[0]
+                bin_src = base + ".bin"
+                if os.path.isfile(bin_src):
+                    shutil.copy2(
+                        bin_src, os.path.join(models_dir, os.path.basename(bin_src))
+                    )
+                for tex_src in [
+                    base + "_0.png",
+                    base + "_0.jpg",
+                    base + ".png",
+                    base + ".jpg",
+                ]:
+                    if os.path.isfile(tex_src):
+                        shutil.copy2(
+                            tex_src, os.path.join(models_dir, os.path.basename(tex_src))
+                        )
 
         server = _start_http_server(tmp_dir)
         port = server.server_address[1]
