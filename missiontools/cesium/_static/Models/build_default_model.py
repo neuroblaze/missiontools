@@ -42,14 +42,19 @@ _ATLAS = {
     "-Z": (2, 0),
 }
 
-# Label to draw in each cell
+# Labels drawn onto the atlas for each glTF face.
+# Cesium auto-converts glTF Y-up → Z-up with Rx(−90°), remapping:
+#   glTF +Y → Cesium +Z     glTF +Z → Cesium −Y
+#   glTF +X → Cesium +X (unchanged)
+# We label each *glTF* face with the Cesium-axis text that will be
+# visible after Cesium's automatic conversion.
 _LABEL = {
     "+X": "X+",
     "-X": "X−",
-    "+Y": "Y+",
-    "-Y": "Y−",
-    "+Z": "Z+",
-    "-Z": "Z−",
+    "+Y": "Z+",
+    "-Y": "Z−",
+    "+Z": "Y−",
+    "-Z": "Y+",
 }
 
 
