@@ -155,6 +155,19 @@ class CesiumViewer:
 
         self._sc_counter += 1
         packet_id = f"sc-{self._sc_counter}"
+
+        # Resolve model path: if a bare filename is passed, look in the
+        # bundled _static/Models directory before falling back to CWD/abs.
+        resolved_model = model
+        if resolved_model is not None:
+            if not os.path.isabs(resolved_model) and not os.path.isfile(resolved_model):
+                builtin_models = os.path.join(
+                    os.path.dirname(__file__), "_static", "Models"
+                )
+                candidate = os.path.join(builtin_models, resolved_model)
+                if os.path.isfile(candidate):
+                    resolved_model = candidate
+
         packets, model_path = build_spacecraft_packets(
             spacecraft,
             t_start,
@@ -165,7 +178,7 @@ class CesiumViewer:
             label=label,
             packet_id=packet_id,
             show_model=show_model,
-            model=model,
+            model=resolved_model,
             scale=scale,
         )
         self._update_time_range(t_start, t_end)
