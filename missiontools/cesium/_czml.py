@@ -10,6 +10,7 @@ pywebview or any rendering backend, making it straightforward to test.
 from __future__ import annotations
 
 import json
+import os
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -195,7 +196,7 @@ def build_spacecraft_packets(
     if show_model:
         if model is not None:
             model_path = model
-            gltf_uri = f"models/{pid}.glb"
+            gltf_uri = f"models/{os.path.basename(model)}"
         else:
             gltf_uri = "Cesium/Models/default_spacecraft.glb"
 

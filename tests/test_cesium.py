@@ -174,7 +174,7 @@ class TestSpacecraftPackets:
             packet_id="sc-1",
         )
         data = packets[0].model_dump(exclude_none=True)
-        assert data["model"]["gltf"] == "models/sc-1.glb"
+        assert data["model"]["gltf"] == "models/my_model.glb"
         assert model_path == "/tmp/my_model.glb"
 
     def test_model_scale(self):
