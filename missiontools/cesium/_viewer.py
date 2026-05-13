@@ -152,10 +152,10 @@ class CesiumViewer:
         scale : float
             Uniform scale factor for the 3D model.  Default 1.0.
         model_rotation : tuple[float, float, float] | None
-            Optional fixed rotation (rx, ry, rz) in radians applied about
-            the model's local X, Y and Z axes (intrinsic XYZ).  Use this
-            to correct a model whose native frame does not match the
-            spacecraft body frame convention.
+            Optional fixed rotation (rx, ry, rz) in **degrees** applied
+            about the model's local X, Y and Z axes (intrinsic XYZ).
+            Use this to correct a model whose native frame does not match
+            the spacecraft body frame convention.
         """
         from ._czml import build_spacecraft_packets
 

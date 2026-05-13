@@ -175,7 +175,7 @@ viewer.add_spacecraft(
     sc, t_start, t_end,
     model="hubble_space_telescope.glb",
     scale=1000.0,
-    model_rotation=(np.pi, 0, 0),  # flip up if the model is upside-down
+    model_rotation=(180, 0, 0),  # flip up if the model is upside-down
 )
 ```
 

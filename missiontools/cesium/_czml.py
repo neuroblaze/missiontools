@@ -85,7 +85,7 @@ def _spacecraft_quaternions_ecef(
     Parameters
     ----------
     model_rotation : tuple[float, float, float] | None
-        Optional fixed rotation (rx, ry, rz) in radians applied about the
+        Optional fixed rotation (rx, ry, rz) in **degrees** applied about the
         X, Y and Z axes (intrinsic XYZ). This corrects the model's native
         frame to match the spacecraft body frame before the attitude
         rotation is applied.
@@ -103,7 +103,9 @@ def _spacecraft_quaternions_ecef(
     quats = Rotation.from_matrix(frames_ecef).as_quat()
 
     if model_rotation is not None:
-        q_corr = Rotation.from_euler("xyz", list(model_rotation)).as_quat()
+        q_corr = Rotation.from_euler(
+            "xyz", [np.deg2rad(v) for v in model_rotation]
+        ).as_quat()
         # scipy quat order is (x, y, z, w); compose as q_body * q_corr
         for i in range(len(t)):
             qx = quats[i]

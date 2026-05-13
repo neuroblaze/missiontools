@@ -209,7 +209,7 @@ class TestSpacecraftPackets:
         packets_default, _ = self._packets(sc, t0, t1, np.timedelta64(60, "s"))
         data_default = packets_default[0].model_dump(exclude_none=True)
         packets_rot, _ = self._packets(
-            sc, t0, t1, np.timedelta64(60, "s"), model_rotation=(np.pi / 2, 0.0, 0.0)
+            sc, t0, t1, np.timedelta64(60, "s"), model_rotation=(90.0, 0.0, 0.0)
         )
         data_rot = packets_rot[0].model_dump(exclude_none=True)
         # The orientation arrays should differ when a rotation is applied
