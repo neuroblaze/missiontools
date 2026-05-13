@@ -117,6 +117,7 @@ class CesiumViewer:
         show_model: bool = True,
         model: str | None = None,
         scale: float = 1.0,
+        model_rotation: tuple[float, float, float] | None = None,
     ) -> None:
         """Add a spacecraft orbit to the visualization.
 
@@ -150,6 +151,11 @@ class CesiumViewer:
             cube with embossed face labels is rendered.
         scale : float
             Uniform scale factor for the 3D model.  Default 1.0.
+        model_rotation : tuple[float, float, float] | None
+            Optional fixed rotation (rx, ry, rz) in radians applied about
+            the model's local X, Y and Z axes (intrinsic XYZ).  Use this
+            to correct a model whose native frame does not match the
+            spacecraft body frame convention.
         """
         from ._czml import build_spacecraft_packets
 
@@ -180,6 +186,7 @@ class CesiumViewer:
             show_model=show_model,
             model=resolved_model,
             scale=scale,
+            model_rotation=model_rotation,
         )
         self._update_time_range(t_start, t_end)
         self._packets.extend(packets)

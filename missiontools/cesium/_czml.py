@@ -74,12 +74,21 @@ def _spacecraft_quaternions_ecef(
     v_eci: np.ndarray,
     t: np.ndarray,
     epoch: np.datetime64,
+    model_rotation: tuple[float, float, float] | None = None,
 ) -> list[float] | None:
     """Compute time-sampled spacecraft body orientation quaternions in ECEF.
 
     Returns a flat list ``[t0, qx, qy, qz, qw, …]`` with
     epoch-relative seconds for CZML ``unitQuaternion`` values,
     or ``None`` if orientation cannot be computed.
+
+    Parameters
+    ----------
+    model_rotation : tuple[float, float, float] | None
+        Optional fixed rotation (rx, ry, rz) in radians applied about the
+        X, Y and Z axes (intrinsic XYZ). This corrects the model's native
+        frame to match the spacecraft body frame before the attitude
+        rotation is applied.
     """
     from scipy.spatial.transform import Rotation
 
@@ -92,6 +101,21 @@ def _spacecraft_quaternions_ecef(
     Rz = _eci_to_ecef_rotations(t)
     frames_ecef = np.einsum("nij,njk->nik", Rz, frames_eci)
     quats = Rotation.from_matrix(frames_ecef).as_quat()
+
+    if model_rotation is not None:
+        q_corr = Rotation.from_euler("xyz", list(model_rotation)).as_quat()
+        # scipy quat order is (x, y, z, w); compose as q_body * q_corr
+        for i in range(len(t)):
+            qx = quats[i]
+            # Hamilton product qx * q_corr
+            x1, y1, z1, w1 = qx
+            x2, y2, z2, w2 = q_corr
+            quats[i] = [
+                w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+                w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+                w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+                w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            ]
 
     epoch_s = ((t - epoch) / np.timedelta64(1, "s")).astype(np.float64)
 
@@ -115,6 +139,7 @@ def build_spacecraft_packets(
     show_model: bool = True,
     model: str | None = None,
     scale: float = 1.0,
+    model_rotation: tuple[float, float, float] | None = None,
 ) -> tuple[list, str | None]:
     """Generate CZML packets for a :class:`~missiontools.Spacecraft`.
 
@@ -141,6 +166,11 @@ def build_spacecraft_packets(
         ``True``, a default bevelled cube with face labels is used.
     scale : float
         Uniform scale factor applied to the 3D model.  Default 1.0.
+    model_rotation : tuple[float, float, float] | None
+        Optional fixed rotation (rx, ry, rz) in radians applied to the
+        model about its local X, Y and Z axes (intrinsic XYZ). This
+        lets you correct a model whose native frame does not match the
+        spacecraft body frame.
 
     Returns
     -------
@@ -201,7 +231,9 @@ def build_spacecraft_packets(
             gltf_uri = "Cesium/Models/default_spacecraft.glb"
 
         model_prop = Model(gltf=gltf_uri, scale=scale)
-        quat_vals = _spacecraft_quaternions_ecef(spacecraft, r, v, t, epoch)
+        quat_vals = _spacecraft_quaternions_ecef(
+            spacecraft, r, v, t, epoch, model_rotation=model_rotation
+        )
         if quat_vals is not None:
             orientation = Orientation(
                 epoch=_datetime64_to_iso(epoch),

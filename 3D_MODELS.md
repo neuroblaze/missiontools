@@ -163,6 +163,22 @@ If the file does not exist in the built-in models directory, the value is
 interpreted relative to the current working directory (or as an absolute path)
 as before.
 
+### Correcting model frame alignment
+
+Many of the NASA models were authored in different tools with inconsistent
+up/front/right axes. The `model_rotation` parameter lets you apply a one-time
+Euler correction (rx, ry, rz in radians) so the model points correctly without
+editing the glTF file:
+
+```python
+viewer.add_spacecraft(
+    sc, t_start, t_end,
+    model="hubble_space_telescope.glb",
+    scale=1000.0,
+    model_rotation=(np.pi, 0, 0),  # flip up if the model is upside-down
+)
+```
+
 ## Source
 
 Models are provided by NASA and are in the public domain. Original collection:

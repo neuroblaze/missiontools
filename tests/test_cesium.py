@@ -187,6 +187,43 @@ class TestSpacecraftPackets:
         data = packets[0].model_dump(exclude_none=True)
         assert data["model"]["scale"] == 2.5
 
+    def test_model_rotation_default_no_change(self):
+        sc = _make_sc()
+        t0 = _EPOCH
+        t1 = _EPOCH + np.timedelta64(120, "s")
+        packets_default, _ = self._packets(sc, t0, t1, np.timedelta64(60, "s"))
+        data_default = packets_default[0].model_dump(exclude_none=True)
+        packets_rot, _ = self._packets(
+            sc, t0, t1, np.timedelta64(60, "s"), model_rotation=None
+        )
+        data_rot = packets_rot[0].model_dump(exclude_none=True)
+        assert (
+            data_default["orientation"]["unitQuaternion"]
+            == data_rot["orientation"]["unitQuaternion"]
+        )
+
+    def test_model_rotation_changes_orientation(self):
+        sc = _make_sc()
+        t0 = _EPOCH
+        t1 = _EPOCH + np.timedelta64(120, "s")
+        packets_default, _ = self._packets(sc, t0, t1, np.timedelta64(60, "s"))
+        data_default = packets_default[0].model_dump(exclude_none=True)
+        packets_rot, _ = self._packets(
+            sc, t0, t1, np.timedelta64(60, "s"), model_rotation=(np.pi / 2, 0.0, 0.0)
+        )
+        data_rot = packets_rot[0].model_dump(exclude_none=True)
+        # The orientation arrays should differ when a rotation is applied
+        assert (
+            data_default["orientation"]["unitQuaternion"]
+            != data_rot["orientation"]["unitQuaternion"]
+        )
+        # But the quaternion norm should remain unit length
+        q = data_rot["orientation"]["unitQuaternion"]
+        for i in range(0, len(q), 5):
+            qx, qy, qz, qw = q[i + 1 : i + 5]
+            norm = (qx**2 + qy**2 + qz**2 + qw**2) ** 0.5
+            assert abs(norm - 1.0) < 1e-9
+
 
 # ===========================================================================
 # GroundStation packets
