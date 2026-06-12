@@ -457,6 +457,9 @@ class InterferenceAnalysis:
                 if not np.any(mask):
                     continue
 
+                # PSD is only evaluated where all conditions hold, but the
+                # results are scattered back onto the full sample grid so
+                # that exceedance runs cannot bridge condition-False gaps.
                 times_masked = sample_times[mask]
 
                 r_vtx, v_vtx = _host_eci(vtx_host, times_masked)
@@ -501,10 +504,14 @@ class InterferenceAnalysis:
                     v_eci=v_vrx,
                 )
 
-                victim_psd = vtx["tx_psd"] + g_vtx - fspl_v + g_vrx_v
-                interf_psd = itx["tx_psd"] + g_itx - fspl_i + g_vrx_i
+                victim_psd = np.full(len(sample_times), -np.inf)
+                interf_psd = np.full(len(sample_times), -np.inf)
+                victim_psd[mask] = vtx["tx_psd"] + g_vtx - fspl_v + g_vrx_v
+                interf_psd[mask] = itx["tx_psd"] + g_itx - fspl_i + g_vrx_i
 
-                runs = _find_exceedance_runs(interf_psd, psd_threshold)
+                above = np.zeros(len(sample_times), dtype=bool)
+                above[mask] = interf_psd[mask] >= psd_threshold
+                runs = _find_exceedance_runs(above.astype(np.float64), 0.5)
 
                 for run_start, run_end in runs:
                     events.append(
@@ -512,12 +519,12 @@ class InterferenceAnalysis:
                             "victim_tx": vtx_name,
                             "victim_rx": vrx_name,
                             "interfering_tx": itx["name"],
-                            "start_time": times_masked[run_start],
-                            "end_time": times_masked[run_end],
+                            "start_time": sample_times[run_start],
+                            "end_time": sample_times[run_end],
                             "max_interferer_psd": float(
                                 np.max(interf_psd[run_start : run_end + 1])
                             ),
-                            "times": times_masked[run_start : run_end + 1].copy(),
+                            "times": sample_times[run_start : run_end + 1].copy(),
                             "interferer_psd": interf_psd[
                                 run_start : run_end + 1
                             ].copy(),
