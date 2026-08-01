@@ -4,6 +4,11 @@ Communications
 Antenna models
 --------------
 
+.. autoclass:: missiontools.AbstractAntenna
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 .. autoclass:: missiontools.IsotropicAntenna
    :members:
    :undoc-members:

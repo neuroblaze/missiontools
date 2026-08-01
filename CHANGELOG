@@ -1,5 +1,8 @@
 # missiontools Changelog
 
+## 0.2.2
+ - Bug fix for interference analysis (PR 4)
+ - Fixed some abstract classes not showing in documentation.
 
 ## 0.2.0
 

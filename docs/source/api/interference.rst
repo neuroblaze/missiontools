@@ -1,7 +1,7 @@
 Interference Analysis
 =====================
 
-.. autoclass:: missiontools.comm.InterferenceAnalysis
+.. autoclass:: missiontools.InterferenceAnalysis
    :members:
    :undoc-members:
    :show-inheritance:

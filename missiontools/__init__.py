@@ -112,6 +112,17 @@ Classes
     Container for thermal simulation results (node temperature histories).
 :class:`AbstractThermalConfig`
     Base class for surface thermal configurations.
+:class:`AbstractAntenna`
+    Base class for antennas attachable to Spacecraft or GroundStation.
+:class:`IsotropicAntenna`
+    Constant-gain antenna (direction-independent).
+:class:`SymmetricAntenna`
+    Axially symmetric antenna defined by a gain-vs-angle table.
+:class:`Link`
+    RF link between two antennas.  Computes link margin via
+    :meth:`~Link.link_margin`.
+:class:`InterferenceAnalysis`
+    Analyse interference risk between space networks.
 
 Conventions
 -----------
@@ -169,9 +180,11 @@ __all__ = [
     "ThermalResult",
     "AbstractThermalConfig",
     "NormalVectorThermalConfig",
+    "AbstractAntenna",
     "IsotropicAntenna",
     "SymmetricAntenna",
     "Link",
+    "InterferenceAnalysis",
     "clear_cache",
     "set_cache_limit",
     "cache_info",
@@ -208,5 +221,11 @@ from .thermal import (
     AbstractThermalConfig,
     NormalVectorThermalConfig,
 )
-from .comm import IsotropicAntenna, SymmetricAntenna, Link
+from .comm import (
+    AbstractAntenna,
+    IsotropicAntenna,
+    SymmetricAntenna,
+    Link,
+    InterferenceAnalysis,
+)
 from .cache import clear_cache, set_cache_limit, cache_info

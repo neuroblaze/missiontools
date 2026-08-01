@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "missiontools"
-version = "0.2.1"
+version = "0.2.2"
 description = "Space mission analysis and design (SMAD) toolkit"
 requires-python = ">=3.13"
 dependencies = [
@@ -16,6 +16,7 @@ dependencies = [
     "shapely",
     "itur",
 ]
+readme = "README.md"
 
 [project.optional-dependencies]
 dev = [

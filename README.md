@@ -2,7 +2,7 @@
 
 `missiontools` is an MIT-licensed framework for space mission analysis tasks in Python. It is currently focused on Earth-orbiting missions, earth observation (EO) in particular.
 
-**Check out the [examples folder](examples/) to see what you can do with `missiontools`**
+**Check out the [examples](https://missiontools.readthedocs.io/en/latest/examples/index.html) to see what you can do with `missiontools`**
 
 ## Features
 
