@@ -17,3 +17,5 @@ browse the documentation.
    yaw_steering
    cubesat_power
    cubesat_thermal
+   conditional_coverage
+   interference_analysis

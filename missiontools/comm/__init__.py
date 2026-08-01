@@ -1,7 +1,7 @@
 """
 missiontools.comm
 =================
-Link budget analysis.
+Link budget analysis and interference analysis.
 
 Antenna classes
 ---------------
@@ -17,9 +17,21 @@ Link budget
 :class:`Link`
     RF link between two antennas.  Computes link margin via
     :meth:`~Link.link_margin`.
+
+Interference analysis
+---------------------
+:class:`InterferenceAnalysis`
+    Analyse interference risk between space networks.
 """
 
 from .antenna import AbstractAntenna, IsotropicAntenna, SymmetricAntenna
+from .interference import InterferenceAnalysis
 from .link import Link
 
-__all__ = ['AbstractAntenna', 'IsotropicAntenna', 'SymmetricAntenna', 'Link']
+__all__ = [
+    "AbstractAntenna",
+    "InterferenceAnalysis",
+    "IsotropicAntenna",
+    "Link",
+    "SymmetricAntenna",
+]
