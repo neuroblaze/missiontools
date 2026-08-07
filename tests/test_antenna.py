@@ -545,7 +545,7 @@ class TestSymmetricAntennaFactories:
         thetas = np.linspace(0.0, np.pi, 10_000)
         gains_dbi = np.interp(thetas, np.radians(ant.angles_deg), ant.gains_dbi)
         g_lin = 10.0 ** (gains_dbi / 10.0)
-        integral = np.trapz(g_lin * np.sin(thetas), thetas)
+        integral = np.trapezoid(g_lin * np.sin(thetas), thetas)
         assert abs(integral - 2.0) / 2.0 < 0.02  # within 2% of unity directivity
 
     def test_isoflux_edge_gain_specified(self):

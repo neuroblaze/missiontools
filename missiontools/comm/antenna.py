@@ -463,7 +463,7 @@ class SymmetricAntenna(AbstractAntenna):
         else:
             # Unity directivity: D₀ = 2 / ∫₀^θ_max [(r/h)² · sin(θ)] dθ
             integrand = (ranges / h) ** 2 * np.sin(thetas)
-            integral = np.trapz(integrand, thetas)
+            integral = np.trapezoid(integrand, thetas)
             g0 = 10.0 * np.log10(2.0 / integral)
 
         gains_main = g0 + gain_shape_db
@@ -517,7 +517,7 @@ class SymmetricAntenna(AbstractAntenna):
         def _residual(sigma: float) -> float:
             # D = 2 / ∫₀^π exp(−θ²/(2σ²)) · sin(θ) dθ
             th = np.linspace(0.0, np.pi, 4000)
-            integ = np.trapz(np.exp(-(th**2) / (2.0 * sigma**2)) * np.sin(th), th)
+            integ = np.trapezoid(np.exp(-(th**2) / (2.0 * sigma**2)) * np.sin(th), th)
             return 2.0 / integ - D
 
         sigma = brentq(_residual, 1e-4, 50.0)
