@@ -396,8 +396,8 @@ class TestSubSatelliteRegionConditionGeometry:
         r, _ = propagate_analytical(t, **_SC_KW, propagator_type="twobody")
         r_ecef = eci_to_ecef(r, t)
         lat_r, lon_r, _ = ecef_to_geodetic(r_ecef)
-        lat_deg = np.degrees(lat_r)
-        lon_deg = np.degrees(lon_r)
+        lat_deg = float(np.degrees(lat_r[0]))
+        lon_deg = float(np.degrees(lon_r[0]))
 
         aoi = AoI.from_region(lat_deg - 5, lat_deg + 5, lon_deg - 5, lon_deg + 5)
         cond = SubSatelliteRegionCondition(_SC, aoi)
