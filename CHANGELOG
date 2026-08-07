@@ -1,5 +1,20 @@
 # missiontools Changelog
 
+## 0.2.3
+ - SymmetricAntenna.from_s465: added S.465-6 main-lobe models from
+   APEREC025V01 (transmitting) and APEREC026V01 (receiving), per
+   Rep. ITU-R S.2196. The main_lobe_model parameter now accepts
+   case-insensitive string aliases ('flat', 's465-5', 's465-6-tx',
+   's465-6-rx', or the APEREC names); the new default is 'flat'.
+   True/False remain as backwards-compatible aliases. The receiving
+   variant applies Note 5 of the Recommendation (capping phi_min at
+   2.5 deg for small dishes).
+ - Fixed np.trapz -> np.trapezoid in from_isoflux, from_gaussian, and
+   test_isoflux_unity_directivity (NumPy 2.0 removed np.trapz).
+ - Fixed test_inside_region to extract scalar lat/lon from
+   ecef_to_geodetic output (NumPy 2.0 disallows converting non-0-d
+   arrays to Python scalars).
+
 ## 0.2.2
  - Bug fix for interference analysis (PR 4)
  - Fixed some abstract classes not showing in documentation.
