@@ -156,3 +156,50 @@ def test_rethresholding_does_not_bridge_condition_gaps(elevated_triplet):
     )
     assert pct == pytest.approx(100.0)
     assert pct <= 100.0
+
+
+def test_interference_percentage_total_denominator(elevated_triplet):
+    """``denominator="total"`` uses the full simulation time, not access time."""
+    ant_vtx, ant_vrx, ant_itx = elevated_triplet
+    gap_start = T0 + np.timedelta64(100, "s")
+    gap_end = T0 + np.timedelta64(200, "s")
+    gap = GapCondition(gap_start, gap_end)
+
+    ia = InterferenceAnalysis(f_MHz=8200.0)
+    ia.add_victim_tx("VTX", ant_vtx, tx_psd=0.0, condition=gap)
+    ia.add_victim_rx("VRX", ant_vrx)
+    ia.add_interfering_tx("ITX", ant_itx, tx_psd=0.0)
+
+    ia.compute(
+        psd_threshold=-200.0,
+        start_time=T0,
+        end_time=T1,
+        event_step=10.0,
+    )
+
+    # Access time is 180 s of a 300 s window; every access sample exceeds.
+    pct_access = ia.interference_percentage(
+        psd_threshold=-200.0,
+        victim_tx="VTX",
+        victim_rx="VRX",
+        interfering_tx="ITX",
+    )
+    assert pct_access == pytest.approx(100.0)
+
+    pct_total = ia.interference_percentage(
+        psd_threshold=-200.0,
+        victim_tx="VTX",
+        victim_rx="VRX",
+        interfering_tx="ITX",
+        denominator="total",
+    )
+    assert pct_total == pytest.approx(60.0)
+
+    with pytest.raises(ValueError):
+        ia.interference_percentage(
+            psd_threshold=-200.0,
+            victim_tx="VTX",
+            victim_rx="VRX",
+            interfering_tx="ITX",
+            denominator="bogus",
+        )

@@ -231,12 +231,14 @@ class InterferenceAnalysis:
         self._cached_events: list[dict] | None = None
         self._cached_access_intervals: dict[str, dict[str, list]] | None = None
         self._cached_access_totals: dict[str, dict[str, float]] | None = None
+        self._cached_total_seconds: float | None = None
         self._compute_psd_threshold: float | None = None
 
     def _invalidate_cache(self) -> None:
         self._cached_events = None
         self._cached_access_intervals = None
         self._cached_access_totals = None
+        self._cached_total_seconds = None
         self._compute_psd_threshold = None
 
     def add_victim_tx(
@@ -541,6 +543,9 @@ class InterferenceAnalysis:
         self._cached_events = events
         self._cached_access_intervals = access_intervals
         self._cached_access_totals = access_totals
+        self._cached_total_seconds = float(
+            (t_end - t_start) / np.timedelta64(1, "s")
+        )
         self._compute_psd_threshold = psd_threshold
 
         return events, access_totals
@@ -551,20 +556,23 @@ class InterferenceAnalysis:
         victim_tx: str | list[str] | npt.ArrayLike,
         victim_rx: str,
         interfering_tx: str | list[str] | npt.ArrayLike,
+        denominator: str = "access",
     ) -> float | npt.NDArray[np.floating]:
         """Compute interference percentage from the last ``compute()`` results.
 
         Interference percentage is defined as::
 
-            100.0 * T_interf / T_access
+            100.0 * T_interf / T_denom
 
         where *T_interf* is the total time (in seconds) during which
         the received interferer PSD at *victim_rx* is at or above
         *psd_threshold* while **at least one** specified *victim_tx*
         and **at least one** specified *interfering_tx* are visible
-        (condition-filtered), and *T_access* is the total
-        condition-filtered time that at least one specified
-        *victim_tx* is visible to *victim_rx*.
+        (condition-filtered), and *T_denom* is the denominator time
+        selected by *denominator*: the total condition-filtered time
+        that at least one specified *victim_tx* is visible to
+        *victim_rx* (``"access"``), or the total simulation time of
+        the most recent ``compute()`` call (``"total"``).
 
         Parameters
         ----------
@@ -581,6 +589,11 @@ class InterferenceAnalysis:
             Name of the single victim receiver.
         interfering_tx : str or list[str] or array_like
             Name(s) of the interfering transmitter(s) to include.
+        denominator : {"access", "total"}, optional
+            Denominator time to use.  ``"access"`` (default) uses the
+            total condition-filtered victim access time; ``"total"``
+            uses the total simulation time of the most recent
+            ``compute()`` call.
 
         Returns
         -------
@@ -589,7 +602,7 @@ class InterferenceAnalysis:
             Returns a scalar ``float`` when *psd_threshold* is a
             scalar, or an ``ndarray`` when *psd_threshold* is a
             sequence.  Returns 0.0 (or an array of zeros) when the
-            denominator (total access time) is zero.
+            denominator is zero.
 
         Raises
         ------
@@ -598,13 +611,19 @@ class InterferenceAnalysis:
             invalidated.
         ValueError
             If any *psd_threshold* value is less than the threshold
-            used in the most recent ``compute()`` call.
+            used in the most recent ``compute()`` call, or if
+            *denominator* is not ``"access"`` or ``"total"``.
         KeyError
             If a specified transmitter or receiver name is not found
             in the cached results.
         """
         if self._cached_events is None:
             raise RuntimeError("No cached results.  Call compute() first.")
+
+        if denominator not in ("access", "total"):
+            raise ValueError(
+                f"denominator must be 'access' or 'total', got {denominator!r}"
+            )
 
         thresholds = np.atleast_1d(np.asarray(psd_threshold, dtype=float))
         if np.any(thresholds < self._compute_psd_threshold):
@@ -628,22 +647,26 @@ class InterferenceAnalysis:
 
         assert self._cached_access_intervals is not None
 
-        denom_intervals: list[tuple[np.datetime64, np.datetime64]] = []
-        for vtx_name in vtx_names:
-            rx_map = self._cached_access_intervals.get(vtx_name)
-            if rx_map is None:
-                raise KeyError(
-                    f"Victim transmitter {vtx_name!r} not found in cached results"
-                )
-            intervals = rx_map.get(victim_rx)
-            if intervals is None:
-                raise KeyError(
-                    f"Victim receiver {victim_rx!r} not found for transmitter "
-                    f"{vtx_name!r} in cached results"
-                )
-            denom_intervals.extend(intervals)
-        denom_intervals = _union_intervals(denom_intervals)
-        denominator = _total_interval_seconds(denom_intervals)
+        if denominator == "total":
+            assert self._cached_total_seconds is not None
+            denominator = self._cached_total_seconds
+        else:
+            denom_intervals: list[tuple[np.datetime64, np.datetime64]] = []
+            for vtx_name in vtx_names:
+                rx_map = self._cached_access_intervals.get(vtx_name)
+                if rx_map is None:
+                    raise KeyError(
+                        f"Victim transmitter {vtx_name!r} not found in cached results"
+                    )
+                intervals = rx_map.get(victim_rx)
+                if intervals is None:
+                    raise KeyError(
+                        f"Victim receiver {victim_rx!r} not found for transmitter "
+                        f"{vtx_name!r} in cached results"
+                    )
+                denom_intervals.extend(intervals)
+            denom_intervals = _union_intervals(denom_intervals)
+            denominator = _total_interval_seconds(denom_intervals)
 
         if denominator == 0.0:
             result = np.zeros(len(thresholds), dtype=float)
