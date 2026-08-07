@@ -618,7 +618,7 @@ class SymmetricAntenna(AbstractAntenna):
         cls,
         diameter: float,
         frequency: float,
-        main_lobe_model: bool = False,
+        main_lobe_model: bool | str = "flat",
         gmax_dbi: float | None = None,
         **kwargs,
     ) -> "SymmetricAntenna":
@@ -631,12 +631,25 @@ class SymmetricAntenna(AbstractAntenna):
         frequency : float
             Centre frequency (Hz).  Valid range per the Recommendation:
             2–31 GHz.
-        main_lobe_model : bool, optional
-            If *False* (default), the canonical ITU-R S.465-6 sidelobe
-            envelope is used; the inner region (0° to φ_min) is completed
-            with a flat plateau at *G*_max.  If *True*, the smooth
-            parabolic main-lobe extension from APEREC013V01 is used,
-            producing a continuous pattern from boresight to 180°.
+        main_lobe_model : bool or str, optional
+            Selects how the inner (main-lobe) region of the pattern is
+            modelled.  Accepts (case-insensitive):
+
+            ``False`` or ``'flat'`` (default)
+                Flat plateau at *G*_max from 0° to φ_min, followed by the
+                canonical ITU-R S.465-6 sidelobe envelope.
+            ``True``, ``'s465-5'`` or ``'APEREC013V01'``
+                Smooth parabolic main-lobe extension from APEREC013V01
+                (S.465-5), producing a continuous pattern from boresight
+                to 180°.  ``True``/``False`` are kept for backwards
+                compatibility.
+            ``'s465-6-tx'`` or ``'APEREC025V01'``
+                S.465-6 transmitting main-lobe model from APEREC025V01.
+            ``'s465-6-rx'`` or ``'APEREC026V01'``
+                S.465-6 receiving main-lobe model from APEREC026V01.  This
+                applies Note 5 of the Recommendation, capping φ_min at
+                2.5° for small dishes (D/λ < 50).
+
         gmax_dbi : float, optional
             Peak on-axis gain (dBi).  When provided, overrides the value
             computed from *diameter* and *frequency* (which assumes η = 0.7).
@@ -657,6 +670,14 @@ class SymmetricAntenna(AbstractAntenna):
                Earth station antenna pattern for earth stations coordinated
                after 1993 in the frequency range from 2 to about 30 GHz,"
                APEREC013V01, Apr. 2022.
+        .. [3] ITU-R BR Software, "Recommendation ITU-R S.465-6 TRANSMITTING
+               reference Earth station antenna pattern for earth stations
+               in FSS in the frequency range from 2 to 31 GHz coordinated
+               after 1993," APEREC025V01, Apr. 2022.
+        .. [4] ITU-R BR Software, "Recommendation ITU-R S.465-6 RECEIVING
+               reference Earth station antenna pattern for earth stations
+               in FSS in the frequency range from 2 to 31 GHz coordinated
+               after 1993," APEREC026V01, Aug. 2022.
         """
         _C = 299_792_458.0
         D = float(diameter)
@@ -669,18 +690,67 @@ class SymmetricAntenna(AbstractAntenna):
             eta = 0.7  # BR-software default efficiency
             g_peak_dbi = 10.0 * np.log10(eta * (np.pi * dl) ** 2)
 
-        if main_lobe_model:
-            # APEREC013V01 smooth main-lobe extension
+        # Normalise main_lobe_model to a canonical string key.
+        if isinstance(main_lobe_model, bool):
+            mlm = "s465-5" if main_lobe_model else "flat"
+        else:
+            mlm = str(main_lobe_model).strip().lower()
+
+        _VALID_MLM = {
+            "flat",
+            "s465-5",
+            "aperec013v01",
+            "s465-6-tx",
+            "aperec025v01",
+            "s465-6-rx",
+            "aperec026v01",
+        }
+        if mlm not in _VALID_MLM:
+            raise ValueError(
+                f"main_lobe_model={main_lobe_model!r} is not recognised. "
+                f"Valid values: False, 'flat', True, 's465-5', "
+                f"'APEREC013V01', 's465-6-tx', 'APEREC025V01', "
+                f"'s465-6-rx', 'APEREC026V01'."
+            )
+
+        # Sidelobe boundary common to every variant.
+        phi_b = 10.0 ** (42.0 / 25.0)  # ≈ 48.0°
+
+        if mlm == "flat":
+            # Canonical S.465-6 sidelobe envelope with flat main lobe.
+            if dl >= 50:
+                phi_min = max(1.0, 100.0 / dl)
+            else:
+                phi_min = max(2.0, 114.0 * (lam / D) ** 1.09)
+
+            # Flat main lobe: 0 → φ_min
+            parts_a: list[npt.NDArray[np.floating]] = [
+                np.array([0.0, phi_min])
+            ]
+            parts_g: list[npt.NDArray[np.floating]] = [
+                np.array([g_peak_dbi, g_peak_dbi])
+            ]
+
+            # Sidelobe envelope: φ_min → 48°
+            phi_sl = np.linspace(phi_min, phi_b, 500, endpoint=False)
+            parts_a.append(phi_sl)
+            parts_g.append(32.0 - 25.0 * np.log10(phi_sl))
+
+            # Far sidelobe: 48° → 180°
+            parts_a.append(np.array([phi_b, 180.0]))
+            parts_g.append(np.array([-10.0, -10.0]))
+
+        elif mlm in ("s465-5", "aperec013v01"):
+            # APEREC013V01 smooth main-lobe extension (S.465-5).
             g1 = 32.0 if dl > 100 else -18.0 + 25.0 * np.log10(dl)
             phi_r = 1.0 if dl > 100 else 100.0 / dl  # degrees
             phi_m = (20.0 / dl) * np.sqrt(max(g_peak_dbi - g1, 0.0))
-            phi_b = 10.0 ** (42.0 / 25.0)  # ≈ 48.0°
 
             # Parabolic main lobe: 0 → φ_m
             phi_ml = np.linspace(0.0, phi_m, 200, endpoint=False)
             g_ml = g_peak_dbi - 2.5e-3 * (dl * phi_ml) ** 2
-            parts_a: list[npt.NDArray[np.floating]] = [phi_ml]
-            parts_g: list[npt.NDArray[np.floating]] = [g_ml]
+            parts_a = [phi_ml]
+            parts_g = [g_ml]
 
             # Transition plateau: φ_m → φ_r  (may be zero-width)
             if phi_r > phi_m:
@@ -697,25 +767,91 @@ class SymmetricAntenna(AbstractAntenna):
             parts_g.append(np.array([-10.0, -10.0]))
 
         else:
-            # Canonical S.465-6 sidelobe envelope
+            # S.465-6 main-lobe extension per Rep. ITU-R S.2196.
+            # APEREC025V01 (transmitting) and APEREC026V01 (receiving)
+            # share the same shape; the receiving variant additionally
+            # caps φ_min at 2.5° for small dishes (Note 5).
+            applying_note_5 = mlm in ("s465-6-rx", "aperec026v01")
+
+            # φ_min selection per the Recommendation.
             if dl >= 50:
                 phi_min = max(1.0, 100.0 / dl)
             else:
                 phi_min = max(2.0, 114.0 * (lam / D) ** 1.09)
+            if applying_note_5 and phi_min > 2.5:
+                phi_min = 2.5
 
-            phi_b = 48.0  # degrees
+            # φ_b is defined as 10^(42/25); ensure it never lies below
+            # φ_min (it cannot in practice, but guard anyway).
+            phi_b_eff = max(phi_b, phi_min)
 
-            # Flat main lobe: 0 → φ_min
-            parts_a = [np.array([0.0, phi_min])]
-            parts_g = [np.array([g_peak_dbi, g_peak_dbi])]
+            parts_a = []
+            parts_g = []
 
-            # Sidelobe envelope: φ_min → 48°
-            phi_sl = np.linspace(phi_min, phi_b, 500, endpoint=False)
+            if dl <= 54.5:
+                # Small/medium dish: parabolic main lobe blending into the
+                # sidelobe envelope via a `max` blend over [φ_1, φ_min].
+                phi_1 = 0.9 * 114.0 * (lam / D) ** 1.09  # degrees
+
+                if phi_min >= phi_1:
+                    # Full parabola + blend, as in the Recommendation.
+                    n_ml = max(2, int(np.ceil(200 * (phi_1 / max(phi_min, 1e-9)))))
+                    phi_ml = np.linspace(0.0, phi_1, n_ml, endpoint=False)
+                    parts_a.append(phi_ml)
+                    parts_g.append(
+                        g_peak_dbi - 2.5e-3 * (dl * phi_ml) ** 2
+                    )
+
+                    n_blend = max(2, int(np.ceil(300 * (phi_min - phi_1))))
+                    phi_blend = np.linspace(
+                        phi_1, phi_min, n_blend, endpoint=False
+                    )
+                    g_para = g_peak_dbi - 2.5e-3 * (dl * phi_blend) ** 2
+                    g_side = 32.0 - 25.0 * np.log10(
+                        np.maximum(phi_blend, 1e-10)
+                    )
+                    parts_a.append(phi_blend)
+                    parts_g.append(np.maximum(g_para, g_side))
+                else:
+                    # Note 5 (RX) truncates the blend region: the parabola
+                    # extends all the way to φ_min.
+                    n_ml = max(2, int(np.ceil(200 * phi_min)))
+                    phi_ml = np.linspace(0.0, phi_min, n_ml, endpoint=False)
+                    parts_a.append(phi_ml)
+                    parts_g.append(
+                        g_peak_dbi - 2.5e-3 * (dl * phi_ml) ** 2
+                    )
+
+            else:
+                # Large dish: parabola → plateau at G1 → sidelobe envelope.
+                phi_r = 15.85 * dl ** (-0.6)  # degrees
+                g1 = 32.0 - 25.0 * np.log10(phi_r)
+                phi_m = (20.0 / dl) * np.sqrt(max(g_peak_dbi - g1, 0.0))
+
+                # Parabolic main lobe: 0 → φ_m
+                phi_ml = np.linspace(0.0, phi_m, 200, endpoint=False)
+                g_ml = g_peak_dbi - 2.5e-3 * (dl * phi_ml) ** 2
+                parts_a.append(phi_ml)
+                parts_g.append(g_ml)
+
+                # Plateau at G1: φ_m → φ_r  (may be zero-width)
+                if phi_r > phi_m:
+                    parts_a.append(np.array([phi_m, phi_r]))
+                    parts_g.append(np.array([g1, g1]))
+
+                # Sidelobe envelope starts at φ_r; treat it as φ_min.
+                phi_min = phi_r
+
+            # Sidelobe envelope: φ_min → φ_b, clamped to ≥ -10 dBi.
+            phi_sl = np.linspace(phi_min, phi_b_eff, 300, endpoint=False)
+            g_sl = np.maximum(
+                32.0 - 25.0 * np.log10(np.maximum(phi_sl, 1e-10)), -10.0
+            )
             parts_a.append(phi_sl)
-            parts_g.append(32.0 - 25.0 * np.log10(phi_sl))
+            parts_g.append(g_sl)
 
-            # Far sidelobe: 48° → 180°
-            parts_a.append(np.array([phi_b, 180.0]))
+            # Far sidelobe: φ_b → 180°
+            parts_a.append(np.array([phi_b_eff, 180.0]))
             parts_g.append(np.array([-10.0, -10.0]))
 
         angles_out = np.concatenate(parts_a)

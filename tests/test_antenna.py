@@ -810,6 +810,204 @@ class TestSymmetricAntennaFactories:
         )
         assert ant_default.gains_dbi[0] != ant_override.gains_dbi[0]
 
+    # --- from_s465 string aliases & new S.465-6 main-lobe models ---
+
+    @pytest.mark.parametrize(
+        "alias",
+        ["flat", False, "s465-5", "aperec013v01", "s465-6-tx", "aperec025v01",
+         "s465-6-rx", "aperec026v01"],
+    )
+    def test_s465_main_lobe_model_aliases_accepted(self, alias):
+        """Every documented alias is accepted and returns a valid antenna."""
+        ant = SymmetricAntenna.from_s465(
+            3.0, 14e9, main_lobe_model=alias, body_vector=[0, 0, 1]
+        )
+        assert ant.angles_deg[0] == 0.0
+        assert ant.angles_deg[-1] == 180.0
+
+    @pytest.mark.parametrize("alias", ["flat", "FLAT", "Flat"])
+    def test_s465_alias_case_insensitive(self, alias):
+        """String aliases are matched case-insensitively."""
+        a1 = SymmetricAntenna.from_s465(
+            3.0, 14e9, main_lobe_model="flat", body_vector=[0, 0, 1]
+        )
+        a2 = SymmetricAntenna.from_s465(
+            3.0, 14e9, main_lobe_model=alias, body_vector=[0, 0, 1]
+        )
+        np.testing.assert_array_equal(a1.gains_dbi, a2.gains_dbi)
+
+    def test_s465_true_equals_aperec013v01(self):
+        """True is a backwards-compatible alias for 'APEREC013V01'."""
+        a_t = SymmetricAntenna.from_s465(
+            3.0, 14e9, main_lobe_model=True, body_vector=[0, 0, 1]
+        )
+        a_s = SymmetricAntenna.from_s465(
+            3.0, 14e9, main_lobe_model="s465-5", body_vector=[0, 0, 1]
+        )
+        np.testing.assert_array_equal(a_t.gains_dbi, a_s.gains_dbi)
+
+    def test_s465_flat_default_no_flat_keyword(self):
+        """The new default is 'flat' even when main_lobe_model is omitted."""
+        a_default = SymmetricAntenna.from_s465(
+            3.0, 14e9, body_vector=[0, 0, 1]
+        )
+        a_flat = SymmetricAntenna.from_s465(
+            3.0, 14e9, main_lobe_model="flat", body_vector=[0, 0, 1]
+        )
+        np.testing.assert_array_equal(a_default.gains_dbi, a_flat.gains_dbi)
+
+    def test_s465_invalid_main_lobe_model_raises(self):
+        """An unrecognised main_lobe_model raises ValueError."""
+        with pytest.raises(ValueError):
+            SymmetricAntenna.from_s465(
+                3.0, 14e9, main_lobe_model="nonsense", body_vector=[0, 0, 1]
+            )
+
+    def test_s465_s465_6_tx_peak_gain(self):
+        """S.465-6 TX model: gain at boresight equals G_max."""
+        D, f = 3.0, 14e9
+        lam = 299_792_458.0 / f
+        expected = 10.0 * np.log10(0.7 * (np.pi * D / lam) ** 2)
+        ant = SymmetricAntenna.from_s465(
+            D, f, main_lobe_model="s465-6-tx", body_vector=[0, 0, 1]
+        )
+        assert abs(ant.gains_dbi[0] - expected) < 0.01
+
+    def test_s465_s465_6_tx_parabolic_main_lobe(self):
+        """S.465-6 TX model: mid-main-lobe follows G_max − 2.5e-3·(D/λ·φ)²."""
+        D, f = 3.0, 14e9
+        lam = 299_792_458.0 / f
+        dl = D / lam
+        g_max = 10.0 * np.log10(0.7 * (np.pi * dl) ** 2)
+        # D/λ ≈ 140 > 54.5 → large-dish branch with φ_m
+        phi_r = 15.85 * dl ** (-0.6)
+        g1 = 32.0 - 25.0 * np.log10(phi_r)
+        phi_m = (20.0 / dl) * np.sqrt(max(g_max - g1, 0.0))
+        phi_test = phi_m / 2.0
+        ant = SymmetricAntenna.from_s465(
+            D, f, main_lobe_model="s465-6-tx", body_vector=[0, 0, 1]
+        )
+        g_table = float(
+            np.interp(
+                np.radians(phi_test),
+                np.radians(ant.angles_deg),
+                ant.gains_dbi,
+            )
+        )
+        g_formula = g_max - 2.5e-3 * (dl * phi_test) ** 2
+        assert abs(g_table - g_formula) < 0.05
+
+    def test_s465_s465_6_tx_far_sidelobe(self):
+        """S.465-6 TX model: gain at 90° and 150° is -10 dBi."""
+        ant = SymmetricAntenna.from_s465(
+            3.0, 14e9, main_lobe_model="s465-6-tx", body_vector=[0, 0, 1]
+        )
+        for phi in (90.0, 150.0):
+            g = float(
+                np.interp(
+                    np.radians(phi), np.radians(ant.angles_deg), ant.gains_dbi
+                )
+            )
+            assert abs(g - (-10.0)) < 1e-6
+
+    def test_s465_s465_6_rx_peak_gain(self):
+        """S.465-6 RX model: gain at boresight equals G_max."""
+        D, f = 3.0, 14e9
+        lam = 299_792_458.0 / f
+        expected = 10.0 * np.log10(0.7 * (np.pi * D / lam) ** 2)
+        ant = SymmetricAntenna.from_s465(
+            D, f, main_lobe_model="s465-6-rx", body_vector=[0, 0, 1]
+        )
+        assert abs(ant.gains_dbi[0] - expected) < 0.01
+
+    def test_s465_s465_6_rx_far_sidelobe(self):
+        """S.465-6 RX model: gain at 90° and 150° is -10 dBi."""
+        ant = SymmetricAntenna.from_s465(
+            3.0, 14e9, main_lobe_model="s465-6-rx", body_vector=[0, 0, 1]
+        )
+        for phi in (90.0, 150.0):
+            g = float(
+                np.interp(
+                    np.radians(phi), np.radians(ant.angles_deg), ant.gains_dbi
+                )
+            )
+            assert abs(g - (-10.0)) < 1e-6
+
+    def test_s465_s465_6_tx_and_rx_equal_large_dish(self):
+        """For a large dish (D/λ > 50), TX and RX patterns coincide."""
+        D, f = 3.0, 14e9  # D/λ ≈ 140
+        a_tx = SymmetricAntenna.from_s465(
+            D, f, main_lobe_model="s465-6-tx", body_vector=[0, 0, 1]
+        )
+        a_rx = SymmetricAntenna.from_s465(
+            D, f, main_lobe_model="s465-6-rx", body_vector=[0, 0, 1]
+        )
+        np.testing.assert_allclose(a_tx.gains_dbi, a_rx.gains_dbi, atol=1e-9)
+
+    def test_s465_s465_6_rx_note5_caps_phi_min_small_dish(self):
+        """RX model caps φ_min at 2.5° for a small dish (Note 5).
+
+        For a small dish where the uncapped φ_min exceeds 2.5°, the RX
+        pattern should join the sidelobe envelope at 2.5°, so the gain
+        just above 2.5° follows 32 − 25·log10(φ).
+        """
+        D, f = 0.3, 14e9  # D/λ ≈ 14, uncapped φ_min ≈ 6.4°
+        ant = SymmetricAntenna.from_s465(
+            D, f, main_lobe_model="s465-6-rx", body_vector=[0, 0, 1]
+        )
+        # At 3° the parabolic main lobe no longer applies (would be far
+        # below the sidelobe envelope); the gain should follow the
+        # sidelobe envelope 32 − 25·log10(3).
+        g_3 = float(
+            np.interp(
+                np.radians(3.0), np.radians(ant.angles_deg), ant.gains_dbi
+            )
+        )
+        assert abs(g_3 - (32.0 - 25.0 * np.log10(3.0))) < 0.5
+
+    def test_s465_s465_6_rx_differs_from_tx_small_dish(self):
+        """For a small dish, the RX and TX patterns differ (Note 5)."""
+        D, f = 0.3, 14e9  # D/λ ≈ 14
+        a_tx = SymmetricAntenna.from_s465(
+            D, f, main_lobe_model="s465-6-tx", body_vector=[0, 0, 1]
+        )
+        a_rx = SymmetricAntenna.from_s465(
+            D, f, main_lobe_model="s465-6-rx", body_vector=[0, 0, 1]
+        )
+        # Compare on a common angle grid (patterns have different lengths).
+        phi_test = np.radians(np.array([2.6, 3.0, 5.0, 10.0]))
+        g_tx = np.interp(phi_test, np.radians(a_tx.angles_deg), a_tx.gains_dbi)
+        g_rx = np.interp(phi_test, np.radians(a_rx.angles_deg), a_rx.gains_dbi)
+        assert not np.allclose(g_tx, g_rx)
+
+    def test_s465_s465_6_aliases_equivalent(self):
+        """'s465-6-tx'/'APEREC025V01' and 's465-6-rx'/'APEREC026V01' match."""
+        D, f = 3.0, 14e9
+        a_tx1 = SymmetricAntenna.from_s465(
+            D, f, main_lobe_model="s465-6-tx", body_vector=[0, 0, 1]
+        )
+        a_tx2 = SymmetricAntenna.from_s465(
+            D, f, main_lobe_model="aperec025v01", body_vector=[0, 0, 1]
+        )
+        a_rx1 = SymmetricAntenna.from_s465(
+            D, f, main_lobe_model="s465-6-rx", body_vector=[0, 0, 1]
+        )
+        a_rx2 = SymmetricAntenna.from_s465(
+            D, f, main_lobe_model="aperec026v01", body_vector=[0, 0, 1]
+        )
+        np.testing.assert_array_equal(a_tx1.gains_dbi, a_tx2.gains_dbi)
+        np.testing.assert_array_equal(a_rx1.gains_dbi, a_rx2.gains_dbi)
+
+    def test_s465_s465_6_gmax_override(self):
+        """gmax_dbi overrides the computed peak gain for S.465-6 variants."""
+        D, f, override = 3.0, 14e9, 50.0
+        for mlm in ("s465-6-tx", "s465-6-rx"):
+            ant = SymmetricAntenna.from_s465(
+                D, f, main_lobe_model=mlm, gmax_dbi=override,
+                body_vector=[0, 0, 1],
+            )
+            assert abs(ant.gains_dbi[0] - override) < 0.01
+
 
 # ===================================================================
 # Top-level imports
